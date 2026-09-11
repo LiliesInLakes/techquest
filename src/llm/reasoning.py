@@ -1,0 +1,258 @@
+import os
+import json
+import asyncio
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from openai import AsyncOpenAI
+import yaml
+
+
+@dataclass
+class RecommendationReasoning:
+    movie_title: str
+    reasoning: str
+    key_factors: List[str]
+    user_preferences_matched: List[str]
+
+
+class DeepSeekReasoner:
+    def __init__(self, config_path: str = "config.yaml"):
+        self.config = self._load_config(config_path)
+        deepseek_config = self.config.get("deepseek", {})
+        
+        self.api_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
+        if not self.api_key or self.api_key == "${DEEPSEEK_API_KEY}":
+            raise ValueError("DEEPSEEK_API_KEY not configured")
+        
+        self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
+        self.model = deepseek_config.get("model", "deepseek-chat")
+        
+        self.client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url
+        )
+
+    def _load_config(self, config_path: str) -> Dict:
+        try:
+            with open(config_path) as f:
+                return yaml.safe_load(f)
+        except FileNotFoundError:
+            return {}
+
+    async def generate_recommendation_reasoning(
+        self,
+        movie: Dict[str, Any],
+        user_profile,
+        ranking_factors: Dict[str, float],
+        user_query: str = "",
+        watch_history_summary: str = ""
+    ) -> RecommendationReasoning:
+        prompt = self._build_reasoning_prompt(
+            movie, user_profile, ranking_factors, user_query, watch_history_summary
+        )
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            content = response.choices[0].message.content
+            return self._parse_reasoning_response(content, movie.get('title', ''))
+            
+        except Exception as e:
+            return self._fallback_reasoning(movie, user_profile, ranking_factors, str(e))
+
+    def _get_system_prompt(self) -> str:
+        return """You are a movie recommendation expert for hospitality and airline businesses. 
+Your job is to explain WHY a specific movie was recommended to a user in a natural, conversational way.
+
+Guidelines:
+- Write in first person as if you're the recommender talking to the user
+- Reference specific user preferences (genres, keywords, ratings, watch history)
+- Mention the movie's qualities that match their taste
+- Keep it concise (2-4 sentences)
+- Be specific, not generic
+- Don't mention technical details like "TF-IDF" or "cosine similarity"
+- Focus on WHAT the user likes and HOW this movie delivers that"""
+
+    def _build_reasoning_prompt(
+        self,
+        movie: Dict[str, Any],
+        user_profile,
+        ranking_factors: Dict[str, float],
+        user_query: str,
+        watch_history_summary: str
+    ) -> str:
+        movie_title = movie.get('title', 'Unknown')
+        movie_genres = movie.get('genres', [])
+        movie_overview = movie.get('overview', '')
+        movie_rating = movie.get('vote_average', 0)
+        
+        top_genres = [g for g, _ in user_profile.top_genres[:5]] if user_profile.top_genres else []
+        top_keywords = [k for k, _ in user_profile.top_keywords[:10]] if user_profile.top_keywords else []
+        top_directors = [d for d, _ in user_profile.top_directors[:3]] if user_profile.top_directors else []
+        top_cast = [c for c, _ in user_profile.top_cast[:3]] if user_profile.top_cast else []
+        
+        matched_genres = [g for g in movie_genres if g in top_genres]
+        matched_keywords = [k for k in top_keywords if k.lower() in movie_overview.lower()]
+        
+        factors = []
+        if ranking_factors.get('imdb', 0) > 0.7:
+            factors.append(f"high IMDb rating ({movie_rating}/10)")
+        if ranking_factors.get('watch_history', 0) > 0.5:
+            factors.append("strong match with your watch history")
+        if ranking_factors.get('keyword_overlap', 0) > 0.3:
+            factors.append("keywords you've enjoyed before")
+        if ranking_factors.get('semantic', 0) > 0.6:
+            factors.append("semantically similar to movies you like")
+        
+        prompt = f"""Movie: {movie_title}
+Genres: {', '.join(movie_genres)}
+IMDb Rating: {movie_rating}/10
+Overview: {movie_overview[:300]}
+
+User Preferences:
+- Favorite Genres: {', '.join(top_genres) if top_genres else 'Not available'}
+- Favorite Keywords: {', '.join(top_keywords) if top_keywords else 'Not available'}
+- Favorite Directors: {', '.join(top_directors) if top_directors else 'Not available'}
+- Favorite Actors: {', '.join(top_cast) if top_cast else 'Not available'}
+- Average Rating Given: {user_profile.avg_rating:.1f}/10
+- Total Movies Watched: {user_profile.watch_count}
+
+User Query: {user_query if user_query else 'General recommendation'}
+
+Watch History Context: {watch_history_summary if watch_history_summary else 'Based on your viewing patterns'}
+
+Key Matches:
+- Matching Genres: {', '.join(matched_genres) if matched_genres else 'None'}
+- Matching Keywords in Overview: {', '.join(matched_keywords) if matched_keywords else 'None'}
+- Ranking Factors: {', '.join(factors) if factors else 'General compatibility'}
+
+Write a natural, conversational recommendation reason (2-4 sentences) explaining why this movie was chosen for this user. Start with 'Because you...' or 'Since you...'"""
+        
+        return prompt
+
+    def _parse_reasoning_response(self, content: str, movie_title: str) -> RecommendationReasoning:
+        lines = content.strip().split('\n')
+        reasoning = ' '.join(lines).strip()
+        
+        key_factors = []
+        user_prefs = []
+        
+        content_lower = content.lower()
+        if 'genre' in content_lower:
+            key_factors.append('genre preference')
+        if 'director' in content_lower:
+            key_factors.append('director preference')
+        if 'actor' in content_lower or 'cast' in content_lower:
+            key_factors.append('actor preference')
+        if 'rating' in content_lower or 'imdb' in content_lower:
+            key_factors.append('high rating')
+        if 'keyword' in content_lower or 'theme' in content_lower:
+            key_factors.append('thematic match')
+        if 'history' in content_lower or 'watched' in content_lower:
+            key_factors.append('watch history')
+        
+        return RecommendationReasoning(
+            movie_title=movie_title,
+            reasoning=reasoning,
+            key_factors=key_factors,
+            user_preferences_matched=user_prefs
+        )
+
+    def _fallback_reasoning(
+        self,
+        movie: Dict[str, Any],
+        user_profile,
+        ranking_factors: Dict[str, float],
+        error: str
+    ) -> RecommendationReasoning:
+        movie_title = movie.get('title', 'Unknown')
+        genres = movie.get('genres', [])
+        rating = movie.get('vote_average', 0)
+        
+        top_genres = [g for g, _ in user_profile.top_genres[:3]] if user_profile.top_genres else []
+        matched = [g for g in genres if g in top_genres]
+        
+        if matched:
+            reason = f"Because you enjoy {', '.join(matched)} movies, I recommend {movie_title} — it's a {rating}/10 rated {', '.join(genres)} film that matches your taste."
+        else:
+            reason = f"Since you've rated movies {user_profile.avg_rating:.1f}/10 on average, {movie_title} ({rating}/10) fits your preference for well-rated {', '.join(genres)} films."
+        
+        return RecommendationReasoning(
+            movie_title=movie_title,
+            reasoning=reason,
+            key_factors=['genre preference', 'rating'] if matched else ['rating'],
+            user_preferences_matched=matched
+        )
+
+    async def generate_batch_reasoning(
+        self,
+        movies: List[Dict[str, Any]],
+        user_profile,
+        ranking_factors_list: List[Dict[str, float]],
+        user_query: str = "",
+        watch_history_summary: str = ""
+    ) -> List[RecommendationReasoning]:
+        tasks = [
+            self.generate_recommendation_reasoning(movie, user_profile, factors, user_query, watch_history_summary)
+            for movie, factors in zip(movies, ranking_factors_list)
+        ]
+        return await asyncio.gather(*tasks)
+
+
+class ReasoningTemplateEngine:
+    def __init__(self):
+        self.templates = {
+            "genre_match": "Because you love {genre} movies, {title} is a great pick — it's a {rating}/10 {genres} film that delivers exactly what you enjoy.",
+            "director_match": "Since you've enjoyed films by {director}, you'll like {title} — it carries their signature style with a {rating}/10 rating.",
+            "actor_match": "Given your preference for {actor}'s performances, {title} showcases them in a {rating}/10 {genres} role.",
+            "keyword_match": "Because you've liked movies with themes like {keywords}, {title} ({rating}/10) explores similar territory.",
+            "high_rating": "With your average rating of {avg_rating}/10, {title} ({rating}/10) meets your quality bar for {genres} films.",
+            "watch_history": "Based on your watch history, {title} ({rating}/10) aligns with the {genres} patterns you've consistently enjoyed.",
+            "semantic": "Since you enjoyed similar movies, {title} ({rating}/10) captures that same {genres} feel you're looking for."
+        }
+
+    def generate(self, movie: Dict, profile, factors: Dict) -> str:
+        title = movie.get('title', 'this movie')
+        genres = movie.get('genres', [])
+        rating = movie.get('vote_average', 0)
+        
+        top_genres = [g for g, _ in profile.top_genres[:3]] if profile.top_genres else []
+        matched_genres = [g for g in genres if g in top_genres]
+        
+        if matched_genres:
+            return self.templates["genre_match"].format(
+                genre=matched_genres[0], title=title, rating=rating, genres=', '.join(genres)
+            )
+        
+        if factors.get('watch_history', 0) > 0.5:
+            return self.templates["watch_history"].format(
+                title=title, rating=rating, genres=', '.join(genres)
+            )
+        
+        if factors.get('imdb', 0) > 0.7:
+            return self.templates["high_rating"].format(
+                title=title, rating=rating, genres=', '.join(genres), avg_rating=profile.avg_rating
+            )
+        
+        return f"{title} ({rating}/10) is a {', '.join(genres)} film that matches your viewing preferences."
+
+
+async def main():
+    try:
+        reasoner = DeepSeekReasoner()
+        print("DeepSeekReasoner initialized successfully")
+    except ValueError as e:
+        print(f"Configuration error: {e}")
+        print("Set DEEPSEEK_API_KEY environment variable")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,352 @@
+import os
+import json
+import asyncio
+from typing import List, Dict, Any, Optional, Set
+from dataclasses import dataclass, field
+from openai import AsyncOpenAI
+import yaml
+
+
+@dataclass
+class ExtractedFeatures:
+    genres: List[str] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
+    actors: List[str] = field(default_factory=list)
+    directors: List[str] = field(default_factory=list)
+    decades: List[str] = field(default_factory=list)
+    mood: Optional[str] = None
+    min_rating: float = 0.0
+    exclude_genres: List[str] = field(default_factory=list)
+    exclude_keywords: List[str] = field(default_factory=list)
+    query_text: str = ""
+    confidence: float = 0.0
+    original_text: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "genres": self.genres,
+            "keywords": self.keywords,
+            "actors": self.actors,
+            "directors": self.directors,
+            "decades": self.decades,
+            "mood": self.mood,
+            "min_rating": self.min_rating,
+            "exclude_genres": self.exclude_genres,
+            "exclude_keywords": self.exclude_keywords,
+            "query_text": self.query_text,
+            "confidence": self.confidence,
+            "original_text": self.original_text
+        }
+
+
+class NLFeatureExtractor:
+    TMDB_GENRES = [
+        "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
+        "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
+        "Romance", "Science Fiction", "TV Movie", "Thriller", "War", "Western"
+    ]
+
+    def __init__(self, config_path: str = "config.yaml", semantic_search=None):
+        self.config = self._load_config(config_path)
+        deepseek_config = self.config.get("deepseek", {})
+        
+        self.api_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
+        if not self.api_key or self.api_key == "${DEEPSEEK_API_KEY}":
+            raise ValueError("DEEPSEEK_API_KEY not configured")
+        
+        self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
+        self.model = deepseek_config.get("model", "deepseek-chat")
+        
+        self.client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url
+        )
+        
+        self.semantic_search = semantic_search
+
+    def _load_config(self, config_path: str) -> Dict:
+        try:
+            with open(config_path) as f:
+                return yaml.safe_load(f)
+        except FileNotFoundError:
+            return {}
+
+    async def extract(self, text: str, context: Dict[str, Any] = None) -> ExtractedFeatures:
+        context = context or {}
+        
+        prompt = self._build_extraction_prompt(text, context)
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=800,
+                response_format={"type": "json_object"}
+            )
+            
+            content = response.choices[0].message.content
+            parsed = json.loads(content)
+            return self._parse_and_validate(parsed, text)
+            
+        except Exception as e:
+            print(f"LLM extraction failed: {e}, using fallback")
+            return self._fallback_extraction(text, context)
+
+    def _get_system_prompt(self) -> str:
+        genres_str = ", ".join(self.TMDB_GENRES)
+        return f"""You are a movie preference parser for a recommendation system. 
+Extract structured features from natural language movie requests.
+
+VALID GENRES (TMDB): {genres_str}
+
+OUTPUT FORMAT (JSON only):
+{{
+  "genres": ["Genre1", "Genre2"],
+  "keywords": ["keyword1", "keyword2"],
+  "actors": ["Actor Name"],
+  "directors": ["Director Name"],
+  "decades": ["1990s", "2000s"],
+  "mood": "lighthearted|dark|thrilling|emotional|mind-bending|nostalgic|feel-good|gritty",
+  "min_rating": 0.0-10.0,
+  "exclude_genres": ["Horror"],
+  "exclude_keywords": ["gore"],
+  "query_text": "concise search terms for vectorization",
+  "confidence": 0.0-1.0
+}}
+
+RULES:
+- Map synonyms to TMDB genres (e.g., "sci-fi" → "Science Fiction", "romcom" → ["Comedy", "Romance"])
+- Extract specific entities: actor/director names, decades, franchises
+- Mood: single word describing emotional tone
+- min_rating: if user says "highly rated", "good reviews", use 7.0; "masterpiece" → 8.0
+- Exclusions: "not horror", "no gore", "avoid sequels"
+- query_text: compact terms for TF-IDF/semantic search (max 50 words)
+- confidence: how well you understood the request (0.0-1.0)"""
+
+    def _build_extraction_prompt(self, text: str, context: Dict[str, Any]) -> str:
+        context_str = ""
+        if context.get("subscriptions"):
+            context_str += f"\nAvailable subscriptions: {', '.join(context['subscriptions'])}"
+        if context.get("region"):
+            context_str += f"\nRegion: {context['region']}"
+        if context.get("language"):
+            context_str += f"\nLanguage: {context['language']}"
+        if context.get("watch_history_summary"):
+            context_str += f"\nWatch history: {context['watch_history_summary']}"
+        
+        return f"User request: \"{text}\"{context_str}\n\nExtract features as JSON:"
+
+    def _parse_and_validate(self, parsed: Dict, original_text: str) -> ExtractedFeatures:
+        features = ExtractedFeatures(
+            genres=self._validate_genres(parsed.get("genres", [])),
+            keywords=parsed.get("keywords", [])[:20],
+            actors=parsed.get("actors", [])[:10],
+            directors=parsed.get("directors", [])[:5],
+            decades=self._validate_decades(parsed.get("decades", [])),
+            mood=parsed.get("mood"),
+            min_rating=max(0.0, min(10.0, float(parsed.get("min_rating", 0.0)))),
+            exclude_genres=self._validate_genres(parsed.get("exclude_genres", [])),
+            exclude_keywords=parsed.get("exclude_keywords", [])[:10],
+            query_text=parsed.get("query_text", original_text)[:500],
+            confidence=max(0.0, min(1.0, float(parsed.get("confidence", 0.7)))),
+            original_text=original_text
+        )
+        
+        if not features.query_text:
+            features.query_text = self._build_query_text(features)
+        
+        return features
+
+    def _validate_genres(self, genres: List[str]) -> List[str]:
+        valid = []
+        genre_map = {g.lower(): g for g in self.TMDB_GENRES}
+        genre_map.update({
+            "sci-fi": "Science Fiction", "scifi": "Science Fiction",
+            "romcom": "Comedy", "rom-com": "Comedy",
+            "action": "Action", "thriller": "Thriller",
+            "horror": "Horror", "comedy": "Comedy",
+            "drama": "Drama", "romance": "Romance",
+            "fantasy": "Fantasy", "animation": "Animation",
+            "documentary": "Documentary", "mystery": "Mystery",
+            "crime": "Crime", "adventure": "Adventure",
+            "family": "Family", "war": "War", "western": "Western",
+            "history": "History", "music": "Music"
+        })
+        
+        for g in genres:
+            g_lower = g.lower().strip()
+            if g_lower in genre_map:
+                mapped = genre_map[g_lower]
+                if mapped not in valid:
+                    valid.append(mapped)
+            elif g in self.TMDB_GENRES and g not in valid:
+                valid.append(g)
+        
+        return valid[:5]
+
+    def _validate_decades(self, decades: List[str]) -> List[str]:
+        valid = []
+        for d in decades:
+            d_clean = d.strip().lower()
+            if d_clean.endswith('s') and d_clean[:-1].isdigit():
+                year = int(d_clean[:-1])
+                if 1900 <= year <= 2030:
+                    valid.append(f"{year}s")
+            elif d_clean.isdigit():
+                year = int(d_clean)
+                if 1900 <= year <= 2030:
+                    valid.append(f"{(year // 10) * 10}s")
+        return valid[:3]
+
+    def _build_query_text(self, features: ExtractedFeatures) -> str:
+        parts = []
+        parts.extend(features.genres)
+        parts.extend(features.keywords)
+        parts.extend(features.actors)
+        parts.extend(features.directors)
+        parts.extend(features.decades)
+        if features.mood:
+            parts.append(features.mood)
+        return " ".join(parts)
+
+    def _fallback_extraction(self, text: str, context: Dict[str, Any]) -> ExtractedFeatures:
+        text_lower = text.lower()
+        genres = []
+        keywords = []
+        
+        genre_keywords = {
+            "action": "Action", "comedy": "Comedy", "drama": "Drama",
+            "horror": "Horror", "sci-fi": "Science Fiction", "scifi": "Science Fiction",
+            "thriller": "Thriller", "romance": "Romance", "fantasy": "Fantasy",
+            "animation": "Animation", "documentary": "Documentary", "mystery": "Mystery",
+            "crime": "Crime", "adventure": "Adventure", "romcom": "Comedy"
+        }
+        
+        for kw, genre in genre_keywords.items():
+            if kw in text_lower:
+                genres.append(genre)
+        
+        decades = []
+        import re
+        decade_matches = re.findall(r'\b(19\d{1}|20[0-2]\d)\b', text)
+        for d in decade_matches:
+            year = int(d)
+            decades.append(f"{(year // 10) * 10}s")
+        
+        stopwords = {"i", "want", "to", "watch", "a", "an", "the", "movie", "film", 
+                     "with", "about", "like", "similar", "something", "good", "great"}
+        words = [w for w in text_lower.split() if w not in stopwords and len(w) > 2]
+        keywords = words[:15]
+        
+        mood = None
+        mood_keywords = {
+            "funny": "lighthearted", "dark": "dark", "scary": "thrilling",
+            "emotional": "emotional", "mind-bending": "mind-bending",
+            "nostalgic": "nostalgic", "feel-good": "feel-good", "gritty": "gritty"
+        }
+        for kw, m in mood_keywords.items():
+            if kw in text_lower:
+                mood = m
+                break
+        
+        return ExtractedFeatures(
+            genres=list(set(genres))[:3],
+            keywords=keywords,
+            decades=decades[:2],
+            mood=mood,
+            min_rating=6.0 if any(w in text_lower for w in ["good", "great", "best", "highly rated"]) else 0.0,
+            query_text=" ".join(keywords + genres),
+            confidence=0.5,
+            original_text=text
+        )
+
+    def get_tmdb_genre_ids(self) -> Dict[str, int]:
+        genre_map = {
+            "Action": 28, "Adventure": 12, "Animation": 16, "Comedy": 35, "Crime": 80,
+            "Documentary": 99, "Drama": 18, "Family": 10751, "Fantasy": 14, "History": 36,
+            "Horror": 27, "Music": 10402, "Mystery": 9648, "Romance": 10749,
+            "Science Fiction": 878, "TV Movie": 10770, "Thriller": 53, "War": 10752, "Western": 37
+        }
+        return genre_map
+
+    def build_tmdb_discover_params(
+        self,
+        subscriptions: List[str],
+        region: str = "US",
+        language: str = "en"
+    ) -> Dict[str, Any]:
+        genre_map = self.get_tmdb_genre_ids()
+        genre_ids = [str(genre_map[g]) for g in self.genres if g in genre_map]
+
+        params = {
+            "region": region,
+            "language": language,
+            "vote_average.gte": self.min_rating,
+            "sort_by": "popularity.desc",
+            "page": 1
+        }
+
+        if genre_ids:
+            params["with_genres"] = ",".join(genre_ids)
+
+        if subscriptions:
+            params["with_watch_providers"] = "|".join(subscriptions)
+            params["watch_region"] = region
+
+        return params
+
+    def map_to_vocabulary(self, features: ExtractedFeatures, vocab: Set[str]) -> ExtractedFeatures:
+        if not self.semantic_search:
+            return features
+        
+        mapped_keywords = []
+        for kw in features.keywords:
+            if kw.lower() in vocab:
+                mapped_keywords.append(kw.lower())
+            else:
+                similar = self.semantic_search.find_similar_keywords(kw, top_k=3)
+                for match, score in similar:
+                    if score >= 0.7 and match in vocab:
+                        mapped_keywords.append(match)
+                        break
+                else:
+                    mapped_keywords.append(kw.lower())
+        
+        features.keywords = list(set(mapped_keywords))[:20]
+        return features
+
+
+async def main():
+    try:
+        extractor = NLFeatureExtractor()
+        
+        test_queries = [
+            "I want a funny 90s space comedy with Tom Hanks",
+            "Dark gritty thriller like Sicario but not too violent",
+            "Feel-good romantic comedy from the 2000s",
+            "Mind-bending sci-fi with time travel, highly rated",
+            "Action movie with Tom Cruise, not Mission Impossible"
+        ]
+        
+        for query in test_queries:
+            print(f"\nQuery: {query}")
+            features = await extractor.extract(query)
+            print(f"  Genres: {features.genres}")
+            print(f"  Keywords: {features.keywords[:10]}")
+            print(f"  Actors: {features.actors}")
+            print(f"  Decades: {features.decades}")
+            print(f"  Mood: {features.mood}")
+            print(f"  Min rating: {features.min_rating}")
+            print(f"  Query text: {features.query_text}")
+            print(f"  Confidence: {features.confidence}")
+            
+    except ValueError as e:
+        print(f"Configuration error: {e}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
