@@ -4,6 +4,8 @@
 
 If you have never seen this codebase before, read this file top-to-bottom. By the end you should be able to set it up, run it, trace a request through every layer, and extend it.
 
+
+(tldr at end)
 ---
 
 ## Table of Contents
@@ -480,3 +482,15 @@ pytest tests/ -v
 ---
 
 *Maintainer notes: keep this file in sync when adding CLI subcommands, MCP tools, A2A capabilities, partners, weights, or data files. Secrets belong in `.env` (git-ignored), never in `config.yaml` or docs.*
+
+
+
+
+
+## TLDR
+
+**Pipeline (base):** Watch history → user profile (genres/keywords/directors/cast) + NL query → structured filters → TMDB live candidates (or local pool fallback) → Stage-1 rank (IMDb + TF-IDF + semantic + popularity) → Stage-2 boost (watch-history content/keyword overlap) → Diversity filter (≤3 same genre, ≤2 same director) → LLM explanation per movie.
+
+**Business path (`BusinessMovieRecommender`):** Same pipeline + partner rules filter, session tracking, churn-risk scoring, auto business actions, and analytics event ingestion.
+
+**Features:** Personalized top-K recs, natural-language search, semantic/synonym matching, 2-stage ranking, LLM reasons with template fallback, partner content rules (airline/hotel/streaming), session/device/party context, churn prediction + retention actions, queued analytics events, 3 interfaces (CLI 7 cmds, MCP 11 tools, A2A 10 caps), graceful offline mode without API keys.
