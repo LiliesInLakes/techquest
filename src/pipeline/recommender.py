@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from typing import List, Dict, Any, Optional, Tuple, Set
 from dataclasses import dataclass
 import numpy as np
@@ -53,15 +54,21 @@ class MovieRecommender:
         if self._initialized:
             return
         
-        self.tmdb_client = TMDBClient(config_path=self.config_path)
+        try:
+            self.tmdb_client = TMDBClient(config_path=self.config_path)
+        except ValueError as e:
+            # No/invalid TMDB key: live discovery disabled, local
+            # feature-matrix pool is used instead (see _get_local_candidates).
+            print(f"TMDB not configured ({e}), using local candidate pool only", file=sys.stderr)
+            self.tmdb_client = None
         self.matrix_builder = FeatureMatrixBuilder(config_path=self.config_path)
         
         try:
             self.matrix_builder, self.feature_matrix, self.semantic_index = \
                 FeatureMatrixBuilder.load(self.config_path)
-            print("Loaded precomputed feature matrix")
+            print("Loaded precomputed feature matrix", file=sys.stderr)
         except FileNotFoundError:
-            print("Precomputed matrix not found, building...")
+            print("Precomputed matrix not found, building...", file=sys.stderr)
             self.feature_matrix = self.matrix_builder.build_and_save()
             self.semantic_index = self.matrix_builder.build_semantic_index(self.feature_matrix)
         
@@ -89,20 +96,13 @@ class MovieRecommender:
         try:
             self.reasoner = DeepSeekReasoner(config_path=self.config_path)
         except ValueError:
-            print("DeepSeek not configured, using template engine for reasoning")
+            print("DeepSeek not configured, using template engine for reasoning", file=sys.stderr)
             self.reasoner = None
 
-        try:
-            self.nl_extractor = NLFeatureExtractor(
-                config_path=self.config_path,
-                semantic_search=self.semantic_search
-            )
-        except ValueError:
-            print("DeepSeek not configured for NL extraction, using fallback")
-            self.nl_extractor = NLFeatureExtractor(
-                config_path=self.config_path,
-                semantic_search=self.semantic_search
-            )
+        self.nl_extractor = NLFeatureExtractor(
+            config_path=self.config_path,
+            semantic_search=self.semantic_search
+        )
         
         self._initialized = True
 
@@ -116,34 +116,49 @@ class MovieRecommender:
         max_results: int = 100
     ) -> List[Dict[str, Any]]:
         await self.initialize()
-        
-        async with self.tmdb_client as client:
-            movies = await client.discover_movies(
-                genre=genre,
-                region=region,
-                language=language,
-                min_rating=min_rating,
-                with_watch_providers=subscriptions,
-                watch_region=region,
-                sort_by="popularity.desc"
-            )
-            
-            results = []
-            for m in movies[:max_results]:
-                results.append({
-                    'id': m.id,
-                    'title': m.title,
-                    'overview': m.overview,
-                    'genres': m.genres,
-                    'release_date': m.release_date,
-                    'vote_average': m.vote_average,
-                    'vote_count': m.vote_count,
-                    'popularity': m.popularity,
-                    'original_language': m.original_language,
-                    'poster_path': m.poster_path
-                })
-            
-            return results
+
+        if self.tmdb_client is None:
+            # Local fallback: filter the feature-matrix pool by genre/rating.
+            pool = self._get_local_candidates(None)
+            if genre:
+                pool = [c for c in pool if genre.lower() in [g.lower() for g in c.get('genres', [])]]
+            pool = [c for c in pool if c.get('vote_average', 0) >= min_rating]
+            return pool[:max_results]
+
+        try:
+            async with self.tmdb_client as client:
+                movies = await client.discover_movies(
+                    genre=genre,
+                    region=region,
+                    language=language,
+                    min_rating=min_rating,
+                    with_watch_providers=subscriptions,
+                    watch_region=region,
+                    sort_by="popularity.desc"
+                )
+
+                results = []
+                for m in movies[:max_results]:
+                    results.append({
+                        'id': m.id,
+                        'title': m.title,
+                        'overview': m.overview,
+                        'genres': m.genres,
+                        'release_date': m.release_date,
+                        'vote_average': m.vote_average,
+                        'vote_count': m.vote_count,
+                        'popularity': m.popularity,
+                        'original_language': m.original_language,
+                        'poster_path': m.poster_path
+                    })
+
+                return results
+        except Exception as e:
+            print(f"TMDB unavailable ({e}), falling back to local pool", file=sys.stderr)
+            pool = self._get_local_candidates(None)
+            if genre:
+                pool = [c for c in pool if genre.lower() in [g.lower() for g in c.get('genres', [])]]
+            return pool[:max_results]
 
     async def get_recommendations(
         self,
@@ -278,32 +293,23 @@ class MovieRecommender:
         language: str,
         user_profile: UserPreferenceProfile
     ) -> List[Dict[str, Any]]:
-        async with self.tmdb_client as client:
-            if extracted_features:
-                tmdb_params = extracted_features.build_tmdb_discover_params(subscriptions, region, language)
-                tmdb_params["page"] = 1
-                
-                movies = await client.discover_movies(**tmdb_params)
-                
-                candidates = []
-                for m in movies[:self.rec_config.get("stage1_max_tmdb_results", 200)]:
-                    if self._passes_exclusions(m, extracted_features):
-                        candidates.append({
-                            'id': m.id,
-                            'title': m.title,
-                            'overview': m.overview,
-                            'genres': m.genres,
-                            'release_date': m.release_date,
-                            'vote_average': m.vote_average,
-                            'vote_count': m.vote_count,
-                            'popularity': m.popularity,
-                            'original_language': m.original_language
-                        })
-                
-                if len(candidates) < 50:
-                    popular = await client.get_popular_movies(region=region, language=language, page=1)
-                    for m in popular[:100]:
-                        if m.id not in {c['id'] for c in candidates} and self._passes_exclusions(m, extracted_features):
+        # Stage 1: TMDB returns a LOOSELY sorted pool only (popularity.desc).
+        # No strict filtering at the API level besides the primary genre;
+        # exclusions are applied in Python. If TMDB is unreachable
+        # (no/invalid key, offline), fall back to the local feature-matrix pool.
+        if extracted_features:
+            if self.tmdb_client is None:
+                return self._get_local_candidates(extracted_features)
+            try:
+                async with self.tmdb_client as client:
+                    tmdb_params = self.nl_extractor.build_tmdb_discover_params(
+                        extracted_features, subscriptions, region, language
+                    )
+                    movies = await client.discover_movies(**tmdb_params)
+
+                    candidates = []
+                    for m in movies[:self.rec_config.get("stage1_max_tmdb_results", 200)]:
+                        if self._passes_exclusions(m, extracted_features):
                             candidates.append({
                                 'id': m.id,
                                 'title': m.title,
@@ -315,25 +321,80 @@ class MovieRecommender:
                                 'popularity': m.popularity,
                                 'original_language': m.original_language
                             })
-                
-                return candidates[:self.rec_config.get("stage1_candidates", 100)]
-            else:
-                return await self._get_candidate_movies(subscriptions, region, language, user_profile)
 
-    def _passes_exclusions(self, movie: Movie, extracted_features: ExtractedFeatures) -> bool:
+                    if len(candidates) < 50:
+                        popular = await client.get_popular_movies(region=region, language=language, page=1)
+                        for m in popular[:100]:
+                            if m.id not in {c['id'] for c in candidates} and self._passes_exclusions(m, extracted_features):
+                                candidates.append({
+                                    'id': m.id,
+                                    'title': m.title,
+                                    'overview': m.overview,
+                                    'genres': m.genres,
+                                    'release_date': m.release_date,
+                                    'vote_average': m.vote_average,
+                                    'vote_count': m.vote_count,
+                                    'popularity': m.popularity,
+                                    'original_language': m.original_language
+                                })
+
+                    if candidates:
+                        return candidates[:self.rec_config.get("stage1_candidates", 100)]
+            except Exception as e:
+                print(f"TMDB unavailable ({e}), falling back to local candidate pool", file=sys.stderr)
+
+            return self._get_local_candidates(extracted_features)
+        else:
+            try:
+                return await self._get_candidate_movies(subscriptions, region, language, user_profile)
+            except Exception as e:
+                print(f"TMDB unavailable ({e}), falling back to local candidate pool", file=sys.stderr)
+                return self._get_local_candidates(None)
+
+    def _get_local_candidates(
+        self, extracted_features: Optional[ExtractedFeatures]
+    ) -> List[Dict[str, Any]]:
+        # Local fallback: every movie in the precomputed feature matrix,
+        # minus hard exclusions. Loose pool — ranking happens in stage 1/2.
+        candidates = []
+        for movie_id, meta in self.feature_matrix.movie_metadata.items():
+            movie = {
+                'id': movie_id,
+                'title': meta.get('title', ''),
+                'overview': meta.get('overview', ''),
+                'genres': meta.get('genres', []),
+                'release_date': meta.get('release_date', ''),
+                'vote_average': meta.get('vote_average', 0),
+                'vote_count': meta.get('vote_count', 0),
+                'popularity': meta.get('popularity', 0),
+                'original_language': meta.get('original_language', 'en'),
+            }
+            if self._passes_exclusions(movie, extracted_features):
+                candidates.append(movie)
+        candidates.sort(key=lambda c: (c.get('vote_average', 0), c.get('popularity', 0)), reverse=True)
+        return candidates
+
+    def _passes_exclusions(self, movie, extracted_features: ExtractedFeatures) -> bool:
         if not extracted_features:
             return True
-        
-        movie_genres_lower = [g.lower() for g in movie.genres]
+
+        if isinstance(movie, dict):
+            genres = movie.get('genres', [])
+            overview = movie.get('overview', '')
+        else:
+            genres = movie.genres
+            overview = movie.overview
+
+        movie_genres_lower = [g.lower() for g in genres]
         for excl in extracted_features.exclude_genres:
             if excl.lower() in movie_genres_lower:
                 return False
-        
-        movie_overview_lower = movie.overview.lower()
+
+        movie_overview_lower = (overview or '').lower()
         for excl in extracted_features.exclude_keywords:
             if excl.lower() in movie_overview_lower:
                 return False
-        
+
         return True
 
     async def _get_candidate_movies(
@@ -797,6 +858,7 @@ class BusinessMovieRecommender(MovieRecommender):
         reasoning: str,
         priority: str = "medium"
     ) -> Dict:
+        await self.initialize()
         from src.business.actions import ActionType, TriggerType, ActionPriority
         action = self.action_engine.create_action(
             action_type=ActionType(action_type),
@@ -811,8 +873,9 @@ class BusinessMovieRecommender(MovieRecommender):
         return {"action_id": action.action_id, "result": result}
 
     async def ingest_events(self, events: List[Dict]) -> Dict:
+        await self.initialize()
         from src.business.events import build_event, EventType
-        
+
         analytics_events = []
         for e in events:
             event = build_event(
@@ -884,7 +947,7 @@ async def main():
     )
     
     for rec in result['recommendations']:
-        print(f"#{rec['rank']}: {rec['movie']['title']} - {rec['reasoning']}")
+        print(f"#{rec['rank']}: {rec['movie']['title']} - {rec['reasoning']}", file=sys.stderr)
 
 
 async def main_business():
@@ -908,7 +971,7 @@ async def main_business():
     )
     
     for rec in result['recommendations']:
-        print(f"#{rec['rank']}: {rec['movie']['title']} - {rec['reasoning']}")
+        print(f"#{rec['rank']}: {rec['movie']['title']} - {rec['reasoning']}", file=sys.stderr)
     
     recommender.shutdown()
 

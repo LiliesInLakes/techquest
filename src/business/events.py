@@ -1,3 +1,4 @@
+import sys
 import uuid
 import json
 import time
@@ -163,7 +164,7 @@ class EventIngestion:
                 handler(batch)
             except Exception as e:
                 self.stats["errors"] += 1
-                print(f"Event handler error: {e}")
+                print(f"Event handler error: {e}", file=sys.stderr)
 
         self.stats["events_flushed"] += len(events)
         self.stats["batches_sent"] += 1
@@ -188,7 +189,7 @@ class EventIngestion:
 
 class ConsoleEventHandler:
     def __call__(self, batch: EventBatch):
-        print(f"[Batch {batch.batch_id[:8]}] {batch.size} events")
+        print(f"[Batch {batch.batch_id[:8]}] {batch.size} events", file=sys.stderr)
 
 
 class FileEventHandler:
@@ -235,7 +236,7 @@ class KafkaEventHandler:
                 key_serializer=lambda k: k.encode('utf-8') if k else None
             )
         except ImportError:
-            print("kafka-python not installed, Kafka handler disabled")
+            print("kafka-python not installed, Kafka handler disabled", file=sys.stderr)
 
     def __call__(self, batch: EventBatch):
         if not self.producer:
@@ -266,7 +267,7 @@ class ClickHouseEventHandler:
                 database=self.database, username=user, password=password
             )
         except ImportError:
-            print("clickhouse-connect not installed, ClickHouse handler disabled")
+            print("clickhouse-connect not installed, ClickHouse handler disabled", file=sys.stderr)
 
     def __call__(self, batch: EventBatch):
         if not self.client:
@@ -386,7 +387,7 @@ def main():
     time.sleep(1)
     ingestion.stop()
 
-    print(f"Stats: {ingestion.get_stats()}")
+    print(f"Stats: {ingestion.get_stats()}", file=sys.stderr)
 
 
 if __name__ == "__main__":

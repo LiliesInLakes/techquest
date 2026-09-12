@@ -189,7 +189,12 @@ class TMDBClient:
     def _parse_movie(self, data: Dict) -> Movie:
         genre_names = []
         if "genre_ids" in data:
-            genre_map = {v: k for k, v in (asyncio.run(self.get_genres()) if not hasattr(self, "_genre_cache") else self._genre_cache).items()}
+            # _parse_movie is sync but called from async context; never use
+            # asyncio.run() here (crashes inside a running loop). If the genre
+            # cache isn't populated yet, leave names empty — discover_movies()
+            # populates it via _get_genre_ids() before parsing.
+            cache = getattr(self, "_genre_cache", None) or {}
+            genre_map = {v: k for k, v in cache.items()}
             genre_names = [genre_map.get(gid, "") for gid in data.get("genre_ids", [])]
         elif "genres" in data:
             genre_names = [g["name"] for g in data.get("genres", [])]

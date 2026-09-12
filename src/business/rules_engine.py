@@ -147,18 +147,21 @@ class RulesEngine:
         return filtered
 
     def _passes_filters(self, movie: Dict, filters: Dict, config: PartnerConfig, context: Dict) -> bool:
+        # Missing metadata = pass. Filters only exclude on positive evidence,
+        # so movies without runtime/rating/offline info are never dropped
+        # for lack of data (loose filtering).
         if config.max_runtime_minutes:
-            runtime = movie.get("runtime", 0)
+            runtime = movie.get("runtime")
             if runtime and runtime > config.max_runtime_minutes:
                 return False
 
         if config.allowed_content_ratings:
-            rating = movie.get("content_rating", "UNRATED")
-            if rating not in [r.value for r in config.allowed_content_ratings]:
+            rating = movie.get("content_rating")
+            if rating and rating not in [r.value for r in config.allowed_content_ratings]:
                 return False
 
         if config.offline_required:
-            if not movie.get("offline_available", False):
+            if movie.get("offline_available") is False:
                 return False
 
         if config.competitor_exclude:

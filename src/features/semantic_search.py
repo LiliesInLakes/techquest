@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 from typing import List, Dict, Set, Tuple, Optional
 from dataclasses import dataclass
@@ -37,13 +38,13 @@ class SemanticKeywordSearch:
         unique_keywords = list(set(k.lower().strip() for k in keywords if k and k.strip()))
         self.keyword_list = unique_keywords
         
-        print(f"Building embeddings for {len(unique_keywords)} keywords...")
+        print(f"Building embeddings for {len(unique_keywords)} keywords...", file=sys.stderr)
         embeddings = self.model.encode(unique_keywords, show_progress_bar=True, batch_size=64)
         
         self.keyword_embeddings = {kw: emb for kw, emb in zip(unique_keywords, embeddings)}
         self.embedding_matrix = np.array(embeddings)
         
-        print("Keyword index built.")
+        print("Keyword index built.", file=sys.stderr)
 
     def get_synonyms_wordnet(self, keyword: str) -> Set[str]:
         if keyword in self.synonym_cache:
@@ -152,7 +153,7 @@ class HybridKeywordMatcher:
         self._build_feature_embeddings()
 
     def _build_feature_embeddings(self):
-        print(f"Building embeddings for {len(self.feature_names)} features...")
+        print(f"Building embeddings for {len(self.feature_names)} features...", file=sys.stderr)
         self.feature_embeddings = self.semantic_search.model.encode(
             self.feature_names, show_progress_bar=True, batch_size=64
         )
@@ -207,9 +208,9 @@ def main():
     query = "funny space adventure"
     result = search.search(query)
     
-    print(f"Query: {query}")
-    print(f"Synonyms: {result.synonyms[:10]}")
-    print(f"Similar keywords: {result.similar_keywords[:10]}")
+    print(f"Query: {query}", file=sys.stderr)
+    print(f"Synonyms: {result.synonyms[:10]}", file=sys.stderr)
+    print(f"Similar keywords: {result.similar_keywords[:10]}", file=sys.stderr)
     
     search.save("data/processed/semantic_keyword_index.pkl")
 

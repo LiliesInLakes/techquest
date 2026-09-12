@@ -1,3 +1,4 @@
+import sys
 import os
 import json
 import asyncio
@@ -49,19 +50,25 @@ class NLFeatureExtractor:
     def __init__(self, config_path: str = "config.yaml", semantic_search=None):
         self.config = self._load_config(config_path)
         deepseek_config = self.config.get("deepseek", {})
-        
+
         self.api_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
-        if not self.api_key or self.api_key == "${DEEPSEEK_API_KEY}":
-            raise ValueError("DEEPSEEK_API_KEY not configured")
-        
+        # Don't raise: without a key the extractor degrades to regex fallback
+        # so the pipeline still runs end-to-end (lower extraction quality).
+        self._llm_available = bool(
+            self.api_key and self.api_key != "${DEEPSEEK_API_KEY}"
+            and "your_deepseek_api_key" not in self.api_key
+        )
+        if not self._llm_available:
+            print("DeepSeek not configured, NL extraction uses regex fallback", file=sys.stderr)
+
         self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
         self.model = deepseek_config.get("model", "deepseek-chat")
-        
+
         self.client = AsyncOpenAI(
-            api_key=self.api_key,
+            api_key=self.api_key or "no-key",
             base_url=self.base_url
-        )
-        
+        ) if self._llm_available else None
+
         self.semantic_search = semantic_search
 
     def _load_config(self, config_path: str) -> Dict:
@@ -73,9 +80,12 @@ class NLFeatureExtractor:
 
     async def extract(self, text: str, context: Dict[str, Any] = None) -> ExtractedFeatures:
         context = context or {}
-        
+
+        if not self._llm_available or self.client is None:
+            return self._fallback_extraction(text, context)
+
         prompt = self._build_extraction_prompt(text, context)
-        
+
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -93,7 +103,7 @@ class NLFeatureExtractor:
             return self._parse_and_validate(parsed, text)
             
         except Exception as e:
-            print(f"LLM extraction failed: {e}, using fallback")
+            print(f"LLM extraction failed: {e}, using fallback", file=sys.stderr)
             return self._fallback_extraction(text, context)
 
     def _get_system_prompt(self) -> str:
@@ -275,29 +285,25 @@ RULES:
 
     def build_tmdb_discover_params(
         self,
+        features: "ExtractedFeatures",
         subscriptions: List[str],
         region: str = "US",
         language: str = "en"
     ) -> Dict[str, Any]:
-        genre_map = self.get_tmdb_genre_ids()
-        genre_ids = [str(genre_map[g]) for g in self.genres if g in genre_map]
-
-        params = {
+        # Return kwargs matching TMDBClient.discover_movies() signature.
+        # discover_movies() takes a single genre name; use the first extracted genre.
+        # Loose sorting only: popularity.desc, no strict filtering here.
+        # Exclusions are applied in Python after fetch.
+        return {
+            "genre": features.genres[0] if features.genres else None,
             "region": region,
             "language": language,
-            "vote_average.gte": self.min_rating,
+            "min_rating": features.min_rating or 0.0,
             "sort_by": "popularity.desc",
-            "page": 1
+            "page": 1,
+            "with_watch_providers": subscriptions or None,
+            "watch_region": region,
         }
-
-        if genre_ids:
-            params["with_genres"] = ",".join(genre_ids)
-
-        if subscriptions:
-            params["with_watch_providers"] = "|".join(subscriptions)
-            params["watch_region"] = region
-
-        return params
 
     def map_to_vocabulary(self, features: ExtractedFeatures, vocab: Set[str]) -> ExtractedFeatures:
         if not self.semantic_search:
@@ -333,19 +339,19 @@ async def main():
         ]
         
         for query in test_queries:
-            print(f"\nQuery: {query}")
+            print(f"\nQuery: {query}", file=sys.stderr)
             features = await extractor.extract(query)
-            print(f"  Genres: {features.genres}")
-            print(f"  Keywords: {features.keywords[:10]}")
-            print(f"  Actors: {features.actors}")
-            print(f"  Decades: {features.decades}")
-            print(f"  Mood: {features.mood}")
-            print(f"  Min rating: {features.min_rating}")
-            print(f"  Query text: {features.query_text}")
-            print(f"  Confidence: {features.confidence}")
+            print(f"  Genres: {features.genres}", file=sys.stderr)
+            print(f"  Keywords: {features.keywords[:10]}", file=sys.stderr)
+            print(f"  Actors: {features.actors}", file=sys.stderr)
+            print(f"  Decades: {features.decades}", file=sys.stderr)
+            print(f"  Mood: {features.mood}", file=sys.stderr)
+            print(f"  Min rating: {features.min_rating}", file=sys.stderr)
+            print(f"  Query text: {features.query_text}", file=sys.stderr)
+            print(f"  Confidence: {features.confidence}", file=sys.stderr)
             
     except ValueError as e:
-        print(f"Configuration error: {e}")
+        print(f"Configuration error: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

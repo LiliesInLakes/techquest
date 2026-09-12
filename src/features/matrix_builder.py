@@ -1,3 +1,4 @@
+import sys
 import os
 import pickle
 import pandas as pd
@@ -64,13 +65,16 @@ class FeatureMatrixBuilder:
     def load_tmdb_5000(self) -> pd.DataFrame:
         movies_df = pd.read_csv(self.tmdb_5000_path)
         credits_df = pd.read_csv(self.tmdb_5000_credits_path)
-        
+
+        # credits CSV also has a 'title' column — drop it to avoid title_x/title_y
+        credits_df = credits_df.drop(columns=['title'], errors='ignore')
+
         movies_df = movies_df.merge(credits_df, on='id', how='left')
         
         movies_df['keywords'] = movies_df['keywords'].apply(self._parse_json_list)
         movies_df['genres'] = movies_df['genres'].apply(self._parse_json_list)
-        movies_df['cast'] = movies_df['cast'].apply(self._parse_json_list)
-        movies_df['crew'] = movies_df['crew'].apply(self._parse_json_list)
+        movies_df['cast'] = movies_df['cast'].apply(self._parse_json_cast)
+        movies_df['crew'] = movies_df['crew'].apply(self._parse_json_crew)
         
         movies_df['director'] = movies_df['crew'].apply(
             lambda x: [c['name'] for c in x if c.get('job') == 'Director']
@@ -84,24 +88,90 @@ class FeatureMatrixBuilder:
     def load_movielens_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         tags_df = pd.read_csv(self.movielens_tags_path)
         relevance_df = pd.read_csv(self.movielens_relevance_path)
+        
+        # Ensure consistent types for merge
+        tags_df['tagId'] = tags_df['tagId'].astype(int)
+        relevance_df['tagId'] = relevance_df['tagId'].astype(int)
+        relevance_df['movieId'] = relevance_df['movieId'].astype(int)
+        
         return tags_df, relevance_df
 
     def _parse_json_list(self, val):
         if pd.isna(val):
             return []
         try:
-            import json
-            return [item['name'] for item in json.loads(val.replace("'", '"'))]
+            import json, ast
+            if isinstance(val, str):
+                val = val.strip()
+                if val.startswith('[') and val.endswith(']'):
+                    try:
+                        return [item['name'] for item in json.loads(val.replace("'", '"'))]
+                    except:
+                        try:
+                            parsed = ast.literal_eval(val)
+                            return [item['name'] for item in parsed if 'name' in item]
+                        except:
+                            return []
+            elif isinstance(val, list):
+                return [item['name'] for item in val if 'name' in item]
+            return []
+        except:
+            return []
+    
+    def _parse_json_crew(self, val):
+        if pd.isna(val):
+            return []
+        try:
+            import json, ast
+            if isinstance(val, str):
+                val = val.strip()
+                if val.startswith('[') and val.endswith(']'):
+                    try:
+                        return json.loads(val.replace("'", '"'))
+                    except:
+                        try:
+                            return ast.literal_eval(val)
+                        except:
+                            return []
+            elif isinstance(val, list):
+                return val
+            return []
+        except:
+            return []
+    
+    def _parse_json_cast(self, val):
+        if pd.isna(val):
+            return []
+        try:
+            import json, ast
+            if isinstance(val, str):
+                val = val.strip()
+                if val.startswith('[') and val.endswith(']'):
+                    try:
+                        return json.loads(val.replace("'", '"'))
+                    except:
+                        try:
+                            return ast.literal_eval(val)
+                        except:
+                            return []
+            elif isinstance(val, list):
+                return val
+            return []
         except:
             return []
 
     def build_combined_text(self, movies_df: pd.DataFrame, tags_df: pd.DataFrame, relevance_df: pd.DataFrame) -> pd.DataFrame:
         tmdb_id_to_movielens = self._create_id_mapping(movies_df)
-        
-        top_tags_per_movie = relevance_df.nlargest(20, 'relevance').groupby('movieId')['tagId'].apply(list).reset_index()
-        top_tags_per_movie = top_tags_per_movie.merge(tags_df, left_on='tagId', right_on='tagId', how='left')
-        
-        tag_text_map = top_tags_per_movie.groupby('movieId')['tag'].apply(lambda x: ' '.join(x.dropna())).to_dict()
+
+        # Top 20 tags per movie by relevance, then join tag names
+        top_relevance = (
+            relevance_df.sort_values('relevance', ascending=False)
+            .groupby('movieId', as_index=False)
+            .head(20)
+        )
+        merged = top_relevance.merge(tags_df, on='tagId', how='left')
+
+        tag_text_map = merged.groupby('movieId')['tag'].apply(lambda x: ' '.join(x.dropna())).to_dict()
         
         movies_df['movielens_tags'] = movies_df['id'].map(
             lambda x: tag_text_map.get(tmdb_id_to_movielens.get(x, -1), '')
@@ -130,15 +200,15 @@ class FeatureMatrixBuilder:
         movie_ids = movies_df['id'].tolist()
         movie_titles = movies_df['title'].tolist()
         
-        print("Building CountVectorizer matrix...")
+        print("Building CountVectorizer matrix...", file=sys.stderr)
         count_matrix = self.count_vectorizer.fit_transform(texts)
         feature_names = self.count_vectorizer.get_feature_names_out().tolist()
         
-        print("Building TF-IDF matrix...")
+        print("Building TF-IDF matrix...", file=sys.stderr)
         tfidf_matrix = self.tfidf_vectorizer.fit_transform(texts)
         tfidf_feature_names = self.tfidf_vectorizer.get_feature_names_out().tolist()
         
-        print("Building semantic embeddings...")
+        print("Building semantic embeddings...", file=sys.stderr)
         semantic_embeddings = self.semantic_model.encode(texts, show_progress_bar=True, batch_size=32)
         
         movie_metadata = {}
@@ -182,27 +252,27 @@ class FeatureMatrixBuilder:
         return semantic_index
 
     def build_and_save(self) -> FeatureMatrix:
-        print("Loading TMDB 5000 dataset...")
+        print("Loading TMDB 5000 dataset...", file=sys.stderr)
         movies_df = self.load_tmdb_5000()
-        print(f"Loaded {len(movies_df)} movies from TMDB 5000")
+        print(f"Loaded {len(movies_df)} movies from TMDB 5000", file=sys.stderr)
         
-        print("Loading MovieLens data...")
+        print("Loading MovieLens data...", file=sys.stderr)
         tags_df, relevance_df = self.load_movielens_data()
-        print(f"Loaded {len(tags_df)} tags and {len(relevance_df)} relevance scores")
+        print(f"Loaded {len(tags_df)} tags and {len(relevance_df)} relevance scores", file=sys.stderr)
         
-        print("Building combined features...")
+        print("Building combined features...", file=sys.stderr)
         movies_df = self.build_combined_text(movies_df, tags_df, relevance_df)
         
-        print("Building feature matrices...")
+        print("Building feature matrices...", file=sys.stderr)
         feature_matrix = self.build_matrices(movies_df)
         
-        print("Building semantic similarity index...")
+        print("Building semantic similarity index...", file=sys.stderr)
         semantic_index = self.build_semantic_index(feature_matrix)
         
-        print("Saving matrices...")
+        print("Saving matrices...", file=sys.stderr)
         self._save_feature_matrix(feature_matrix, semantic_index)
         
-        print("Done!")
+        print("Done!", file=sys.stderr)
         return feature_matrix
 
     def _save_feature_matrix(self, feature_matrix: FeatureMatrix, semantic_index: Dict):
@@ -218,7 +288,7 @@ class FeatureMatrixBuilder:
         with open(self.output_dir / "tfidf_vectorizer.pkl", "wb") as f:
             pickle.dump(self.tfidf_vectorizer, f)
         
-        print(f"Saved to {self.output_dir}")
+        print(f"Saved to {self.output_dir}", file=sys.stderr)
 
     @classmethod
     def load(cls, config_path: str = "config.yaml") -> Tuple['FeatureMatrixBuilder', FeatureMatrix, Dict]:
