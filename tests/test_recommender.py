@@ -46,8 +46,8 @@ class TestPreferenceExtractor:
     def test_compute_weight(self):
         extractor = PreferenceExtractor()
         assert extractor._compute_weight(0) == 0.5
-        assert extractor._compute_weight(5.0) == 0.65
-        assert extractor._compute_weight(10.0) == 1.0
+        assert extractor._compute_weight(5.0) == pytest.approx(0.65)
+        assert extractor._compute_weight(10.0) == pytest.approx(1.0)
 
 
 class TestMovieRanker:
@@ -65,8 +65,9 @@ class TestMovieRanker:
         movie_no_votes = {'vote_average': 9.0, 'vote_count': 10}
         
         assert self.ranker._compute_imdb_score(movie_high) == 0.85
-        assert self.ranker._compute_imdb_score(movie_low) == 0.5
-        assert self.ranker._compute_imdb_score(movie_no_votes) == 0.45
+        # 50 votes < default min_vote_count (100) -> score halved: 5.0/10*0.5
+        assert self.ranker._compute_imdb_score(movie_low) == pytest.approx(0.25)
+        assert self.ranker._compute_imdb_score(movie_no_votes) == pytest.approx(0.45)
 
     def test_compute_popularity_score(self):
         movie_popular = {'popularity': 5000, 'vote_count': 20000}
