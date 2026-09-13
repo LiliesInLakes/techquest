@@ -13,3 +13,6 @@ venv/
 hist.json
 data/analytics/
 data/processed/
+
+#vs code settings
+.vscode/
