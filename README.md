@@ -1,6 +1,6 @@
 # Movie Recommender Agent — In-Depth Guide
 
-> **One-line pitch:** An agentic, B2B2C movie-recommendation system built for **hospitality & airline partners** (seatback screens, hotel TVs, mobile apps). It blends TMDB live discovery, offline feature engineering, semantic search, multi-stage ranking, LLM explanations, and a full business-intelligence layer (partner rules, sessions, churn, actions, analytics events). It can be driven three ways: **CLI**, **MCP server** (Model Context Protocol), or **A2A agent** (Agent-to-Agent protocol).
+> **One-line pitch:** An agentic movie-recommendation system. It blends TMDB live discovery, offline feature engineering, semantic search, two-stage ranking, and LLM explanations. It can be driven three ways: **CLI**, **MCP server** (Model Context Protocol), or **A2A agent** (Agent-to-Agent protocol).
 
 If you have never seen this codebase before, read this file top-to-bottom. By the end you should be able to set it up, run it, trace a request through every layer, and extend it.
 
@@ -18,35 +18,21 @@ If you have never seen this codebase before, read this file top-to-bottom. By th
 6. [Configuration](#6-configuration)
 7. [Core Recommendation Pipeline (End-to-End Workflow)](#7-core-recommendation-pipeline-end-to-end-workflow)
 8. [Module Deep-Dives](#8-module-deep-dives)
-9. [Business-Intelligence Layer](#9-business-intelligence-layer)
-10. [Interfaces: CLI, MCP, A2A](#10-interfaces-cli-mcp-a2a)
-11. [Setup From Scratch](#11-setup-from-scratch)
-12. [Usage Cookbook](#12-usage-cookbook)
-13. [Testing](#13-testing)
-14. [Fallback & Offline Behavior](#14-fallback--offline-behavior)
-15. [How to Extend It](#15-how-to-extend-it)
-16. [Glossary](#16-glossary)
+9. [Interfaces: CLI, MCP, A2A](#9-interfaces-cli-mcp-a2a)
+10. [Setup From Scratch](#10-setup-from-scratch)
+11. [Usage Cookbook](#11-usage-cookbook)
+12. [Testing](#12-testing)
+13. [Fallback & Offline Behavior](#13-fallback--offline-behavior)
+14. [How to Extend It](#14-how-to-extend-it)
+15. [Glossary](#15-glossary)
 
 ---
 
 ## 1. What This System Does
 
-**User-facing:** given a user ID, watch history (`[{movie_id, rating}]`), subscriptions, region/language, and optionally a natural-language request like *"funny 90s space comedy with Tom Hanks"*, return a ranked top-K list of movies, each with a natural-language *reason* ("Because you love…").
+Given a user ID, watch history (`[{movie_id, rating}]`), subscriptions, region/language, and optionally a natural-language request like *"funny 90s space comedy with Tom Hanks"*, return a ranked top-K list of movies, each with a natural-language *reason* ("Because you love…").
 
-**Business-facing (the differentiator):** the same flow can run *in a partner context* (`partner_id` = e.g. `airline_default`, `hotel_default`, `streaming_default`):
-
-- Filter/rank per partner content rules (allowed ratings, max runtime, license regions, competitor excludes, offline-only catalogs).
-- Track a **session** (device, party type/size, flight duration, hotel stay, subscription tier, bandwidth, accessibility).
-- Score **churn risk** and suggest retention actions.
-- **Trigger business actions** (bundle upgrade offer, re-engagement nudge, personalized playlist, …).
-- **Ingest analytics events** (plays, skips, impressions, clicks, searches, ratings, …) through a queued background pipeline.
-
-There are two recommender classes for this reason:
-
-| Class | File | Purpose |
-|---|---|---|
-| `MovieRecommender` | `src/pipeline/recommender.py` | Pure recommendation: profile → candidates → rank → explain. No business side-effects. |
-| `BusinessMovieRecommender(MovieRecommender)` | `src/pipeline/recommender.py` | Everything above **plus** rules engine, sessions, churn, actions, event ingestion. Used by `recommend-biz`, churn/action/event CLIs, and the business MCP/A2A tools. |
+The single orchestrator is `MovieRecommender` (`src/pipeline/recommender.py`): profile → candidates → rank → explain. No side effects.
 
 ---
 
@@ -55,40 +41,36 @@ There are two recommender classes for this reason:
 ```
                     ┌──────────────┐      ┌──────────────┐
                     │  CLI (main.py)│      │ MCP server   │      ┌─────────────┐
- User / Partner ───▶│  7 subcommands│      │ (FastAPI :8000)│────▶│ A2A agent   │
-  or external agent │               │      │ 11 tools     │      │ 10 caps     │
+  User / Agent ─────▶│  4 subcommands│      │ (FastAPI :8000)│────▶│ A2A agent   │
+   or external agent │               │      │ 4 tools      │      │ 3 caps      │
                     └──────┬────────┘      └──────┬───────┘      └──────┬──────┘
                            │                      │                     │
                            ▼                      ▼                     ▼
-              ┌──────────────────────────────────────────────────────────────┐
-              │              Pipeline: MovieRecommender /                     │
-              │              BusinessMovieRecommender                          │
-              │  1. PreferenceExtractor → user profile                        │
-              │  2. NLFeatureExtractor  → structured features from NL query   │
-              │  3. TMDBClient (or local pool) → Stage-1 candidates           │
-              │  4. MovieRanker.stage1 → query-similarity ranking             │
-              │  5. MovieRanker.stage2 → watch-history boost                  │
-              │  6. DiversityFilter → de-duplicate genres/directors           │
-              │  7. DeepSeekReasoner / TemplateEngine → explanations          │
-              │  (+ business: RulesEngine, SessionManager, Churn, Actions,    │
-              │   Events — only on the Business path)                         │
-              └──────┬───────────────┬───────────────────┬───────────────────┘
-                     │               │                   │
-                     ▼               ▼                   ▼
-              ┌────────────┐ ┌──────────────┐ ┌────────────────────┐
-              │ TMDB API   │ │ Offline pool │ │ LLM (DeepSeek,      │
-              │ (live)     │ │ data/processed│ │ OpenAI-compatible)  │
-              │ discover / │ │ feature_matrix│ │ reasoning + NL      │
-              │ search /   │ │ .pkl, TF-IDF, │ │ parsing             │
-              │ details    │ │ embeddings   │ │                     │
-              └────────────┘ └──────────────┘ └────────────────────┘
+               ┌──────────────────────────────────────────────────────────────┐
+               │              Pipeline: MovieRecommender                       │
+               │  1. PreferenceExtractor → user profile                        │
+               │  2. NLFeatureExtractor  → structured features from NL query   │
+               │  3. TMDBClient (or local pool) → Stage-1 candidates           │
+               │  4. MovieRanker.stage1 → query-similarity ranking             │
+               │  5. MovieRanker.stage2 → watch-history boost                  │
+               │  6. DiversityFilter → de-duplicate genres/directors           │
+               │  7. DeepSeekReasoner / TemplateEngine → explanations          │
+               └──────┬───────────────┬───────────────────┬───────────────────┘
+                      │               │                   │
+                      ▼               ▼                   ▼
+               ┌────────────┐ ┌──────────────┐ ┌────────────────────┐
+               │ TMDB API   │ │ Offline pool │ │ LLM (DeepSeek,      │
+               │ (live)     │ │ data/processed│ │ OpenAI-compatible)  │
+               │ discover / │ │ feature_matrix│ │ reasoning + NL      │
+               │ search /   │ │ .pkl, TF-IDF, │ │ parsing             │
+               │ details    │ │ embeddings   │ │                     │
+               └────────────┘ └──────────────┘ └────────────────────┘
 ```
 
 **Key design decisions:**
 
 - **Stage-1 is loose, ranking is strict.** TMDB `discover` is called with only the *primary* genre + `popularity.desc` sorting. Exclusions (e.g. "not horror") are applied in Python (`_passes_exclusions`), and real ordering happens in the ranker. This keeps recall high.
 - **Everything degrades gracefully.** No TMDB key → local `data/processed` pool. No DeepSeek key → regex NL parsing + template explanations. TMDB timeout → automatic local-pool fallback.
-- **Business logic is layered on, not baked in.** The base recommender never touches partner state; `BusinessMovieRecommender` wraps it with rules/sessions/churn/actions/events.
 
 ---
 
@@ -113,12 +95,11 @@ There are two recommender classes for this reason:
 
 ```
 TechQuest/
-├── main.py                    # CLI entry point: 7 subcommands (mcp, a2a, precompute,
-│                              #   recommend, recommend-biz, assess-churn, trigger-action, ingest-events)
-├── mcp_server.py              # FastAPI app (:8000): 11 MCP tools, Pydantic param models,
+├── main.py                    # CLI entry point: 4 subcommands (mcp, a2a, precompute, recommend)
+├── mcp_server.py              # FastAPI app (:8000): 4 MCP tools, Pydantic param models,
 │                              #   GET /mcp/tools + POST /mcp/tools/{tool_name}
 ├── a2a_protocol.py            # A2A message/capability dataclasses, abstract A2AAgent,
-│                              #   MovieRecommenderA2AAgent (10 capabilities), A2AClient
+│                              #   MovieRecommenderA2AAgent (3 capabilities), A2AClient
 ├── config.yaml                # All tunable knobs (TMDB/DeepSeek endpoints, ranking weights,
 │                              #   stage sizes, dataset paths)
 ├── requirements.txt           # Pinned deps (see caveat above)
@@ -139,26 +120,18 @@ TechQuest/
 │   │   ├── reasoning.py       # DeepSeekReasoner (per-movie explanations) + ReasoningTemplateEngine fallback
 │   │   └── nl_feature_extractor.py # NL query → ExtractedFeatures (genres/keywords/actors/
 │   │                          #   directors/decades/mood/rating/exclusions) via DeepSeek or regex fallback
-│   ├── pipeline/
-│   │   └── recommender.py     # MovieRecommender + BusinessMovieRecommender (orchestrates everything)
-│   └── business/
-│       ├── rules_engine.py    # PartnerConfig, BusinessRule, RulesEngine + 3 default partners
-│       ├── session_context.py # SessionContext, UserSessionProfile, SessionManager (in-memory, TTL)
-│       ├── churn_risk.py      # ChurnFeatures, rule-weighted ChurnRiskModel, ChurnRiskService
-│       ├── actions.py         # BusinessAction, executors, BusinessActionEngine
-│       └── events.py          # AnalyticsEvent/EventType, queued EventIngestion pipeline
+│   └── pipeline/
+│       └── recommender.py     # MovieRecommender (orchestrates everything)
 ├── tests/
 │   └── test_recommender.py    # Unit tests: extractor, ranker, semantic search, templates, diversity, pipeline helpers
 └── data/
     ├── tmdb_5000_movies.csv / tmdb_5000_credits.csv  # Offline corpus (TMDB 5000)
     ├── genome-tags.csv / genome-scores.csv / links.csv  # MovieLens tag relevance + TMDB↔MovieLens ID map
-    ├── processed/             # Build output: feature_matrix.pkl, semantic_index.pkl,
-    │                          #   count_vectorizer.pkl, tfidf_vectorizer.pkl
-    ├── analytics/ archive/    # Event dumps / misc (not on hot path)
-    └── processed/             # (cached matrices — required at runtime)
+    └── processed/             # Build output: feature_matrix.pkl, semantic_index.pkl,
+                               #   count_vectorizer.pkl, tfidf_vectorizer.pkl (cached matrices — required at runtime)
 ```
 
-If you only have time to read five files: `src/pipeline/recommender.py`, `src/ranking/ranker.py`, `src/features/matrix_builder.py`, `src/llm/nl_feature_extractor.py`, `src/business/rules_engine.py`.
+If you only have time to read four files: `src/pipeline/recommender.py`, `src/ranking/ranker.py`, `src/features/matrix_builder.py`, `src/llm/nl_feature_extractor.py`.
 
 ---
 
@@ -304,63 +277,30 @@ Rating-weighted counting (`weight = 0.3 + rating/10×0.7`, 0.5 if unrated) acros
 
 ---
 
-## 9. Business-Intelligence Layer
+## 9. Interfaces: CLI, MCP, A2A
 
-Only active on `BusinessMovieRecommender` (and the matching MCP/A2A tools + CLI subcommands). All state is **in-memory** (no DB) — sessions/profiles/actions/events reset on restart.
-
-### 9.1 `src/business/rules_engine.py` — Partner rules
-- `PartnerConfig`: `content_filters, ranking_weights, license_regions, partner_content_boost, competitor_exclude, max_runtime_minutes, allowed_content_ratings (default G/PG/PG-13), offline_required, session_limits` + ordered `BusinessRule`s (`condition` supports `eq/neq/gt/gte/lt/lte/in/not_in/contains` + priority + enable flag).
-- `RulesEngine.evaluate()` merges global + partner rules → `{filters, weight_adjustments, actions, warnings}`; `apply_content_filters()` prunes candidates; `apply_weight_adjustments()` mutates `ranker.config` on the business path.
-- `create_default_rules_engine()` ships **3 partners**: `airline_default` (family-safe, offline, runtime-capped for flights), `hotel_default` (broader, premium upsell), `streaming_default` (widest). Start here when adding a partner.
-
-### 9.2 `src/business/session_context.py` — Who/where is watching?
-- `SessionContext`: session/user/partner ids, `DeviceType` (seatback/mobile/tablet/laptop/tv/vr), `PartyType` (solo/couple/family/friends/business) + size, region/language/subs, flight (`duration/number`) or hotel (`room_type, check-in/out`) fields, tier, time/day, offline/bandwidth/screen/audio/accessibility, state machine (`active/paused/ended/expired`).
-- `SessionManager` (thread-safe, 24h TTL): `create_session()`, `get_session()`, `end_session(session_id, watch_events)` (rolls events into `UserSessionProfile`: totals, genre/decade/device/party distributions, completion/skip/rewatch/discovery rates, churn/LTV estimates).
-
-### 9.3 `src/business/churn_risk.py` — Will they leave?
-- `ChurnFeatures`: recency (days since session/watch), frequency (sessions/watch-time windows), engagement (length/completion/skip/rewatch/discovery), taste diversity (HHI), search health (failure rate), recommendation CTR, subscription (tier/age/payment failures/support tickets), external (competitor app, devices).
-- `ChurnRiskModel`: weighted sum over 7 groups (recency .25, frequency .20, engagement .15, satisfaction .15, diversity .10, subscription .10, external .05) with log/linear/inverse normalization; thresholds low .3 / medium .5 / high .7 / critical .85; emits `ChurnPrediction {risk_score, risk_level, top_risk_factors, recommended_actions (reengage/offer/winback/…), confidence, predicted_churn_date, estimated_ltv_loss}`. `ChurnRiskService` adds caching + `get_high_risk_users()`.
-
-### 9.4 `src/business/actions.py` — Do something about it
-- `BusinessAction {action_id, action_type (recommend/upgrade/discount/premium/reengage/playlist/…), partner/user, trigger (session_start/churn_risk_high/search_failed/…), priority, payload, reasoning, expires_at, executed/result}`.
-- `BusinessActionEngine` + per-type `ActionExecutor`s (`RecommendMovieExecutor` queues a recommendation request; `BundleUpgradeExecutor` prices tier upgrades + benefits + discount; …). `create_default_action_engine(recommender?)` wires defaults. Business recommendations auto-create actions from `rules_engine.get_triggered_actions()` on `session_start`.
-
-### 9.5 `src/business/events.py` — Analytics firehose
-- `EventType` (~25 values: session/content/recommendation/search/watchlist/share/download/subscription/device/error).
-- `EventIngestion`: bounded `Queue` (10k), batch (100) + interval (30s) background flush thread, pluggable `handlers`, `{received, flushed, dropped, batches, errors}` stats, `ingest/ingest_batch/start/stop`. `build_event()` factory + `create_ingestion_pipeline()` default. Business recommendations auto-emit `RECOMMENDATION_IMPRESSION` per returned movie.
-
----
-
-## 10. Interfaces: CLI, MCP, A2A
-
-### 10.1 CLI (`main.py`) — 7 subcommands
+### 9.1 CLI (`main.py`) — 4 subcommands
 | Command | What it does | Key flags / example |
 |---|---|---|
 | `precompute` | Build `data/processed/*.pkl` | `python main.py precompute` |
 | `mcp` | Serve FastAPI on `:8000` | `python main.py mcp` |
 | `a2a` | Print agent card + capabilities (no server) | `python main.py a2a` |
-| `recommend` | Base recommendations / search | `python main.py recommend --user-id u1 --genre Action --region US --subscriptions netflix disney --watch-history hist.json --top-k 10 --natural-language "funny 90s space comedy"` (omit `--watch-history` → plain `search_movies`) |
-| `recommend-biz` | Same + partner/session/rules/churn/actions/events | Adds `--partner-id airline_default` (also `hotel_default`, `streaming_default`) |
-| `assess-churn` | Churn score for a user+partner | `python main.py assess-churn --user-id u1 --partner-id airline_default [--user-data user.json]` |
-| `trigger-action` | Create+execute one business action | `--action-type recommend_movie --trigger session_start --reasoning "..." --payload '{}' --priority medium` |
-| `ingest-events` | Batch-ingest analytics JSON | `python main.py ingest-events --events-file events.json` |
+| `recommend` | Recommendations / search | `python main.py recommend --user-id u1 --genre Action --region US --subscriptions netflix disney --watch-history hist.json --top-k 10 --natural-language "funny 90s space comedy"` (omit `--watch-history` → plain `search_movies`) |
 
 Watch-history JSON: `[{"movie_id": 550, "rating": 9.0}, …]`. Sample: `hist.json`.
 
-### 10.2 MCP server (`mcp_server.py`, FastAPI `:8000`)
-- `GET /mcp/tools` → tool catalog; `POST /mcp/tools/{tool_name}` → dispatches to 11 tools (Pydantic-validated):
-  - Recommendation: `search_movies`, `get_recommendations` (+`partner_id/session_id/natural_language`), `get_movie_details`, `analyze_user_preferences`.
-  - Business/session: `create_session` (device/party/flight/hotel/tier/offline…), `end_session`, `get_churn_risk`, `trigger_business_action`, `ingest_events`, `apply_business_rules`, `get_partner_config`.
+### 9.2 MCP server (`mcp_server.py`, FastAPI `:8000`)
+- `GET /mcp/tools` → tool catalog; `POST /mcp/tools/{tool_name}` → dispatches to 4 tools (Pydantic-validated): `search_movies`, `get_recommendations` (+`natural_language`), `get_movie_details`, `analyze_user_preferences`.
 - Returns `CallToolResult(content=[TextContent(text=<json>)])`; unknown tool → 404, handler exception → 500. CORS fully open.
 
-### 10.3 A2A (`a2a_protocol.py`)
+### 9.3 A2A (`a2a_protocol.py`)
 - Primitives: `A2AMessageType` (task_request/response/status, discovery/capabilities, error), `TaskStatus`, `A2AMessage` (uuid, timestamp, correlation), `AgentCapability` (name/desc/input+output JSON-schema/tags), `AgentInfo`, abstract `A2AAgent` (discovery/capability handlers, `register_handler`, `handle_message` with error envelope).
-- `MovieRecommenderA2AAgent` (`movie-recommender-001`): 10 capabilities mirroring MCP — `search_movies`, `get_recommendations`, `analyze_preferences`, `create_session`, `end_session`, `assess_churn_risk`, `trigger_business_action`, `ingest_events`, `apply_business_rules`, `get_partner_config` — each with JSON schemas + tags, routed in `_handle_task_request` to the same pipeline/business classes.
+- `MovieRecommenderA2AAgent` (`movie-recommender-001`): 3 capabilities mirroring MCP — `search_movies`, `get_recommendations`, `analyze_preferences` — each with JSON schemas + tags, routed in `_handle_task_request` to the same pipeline classes.
 - `A2AClient`: `send_request(recipient, task, params, timeout=30)` (future keyed by correlation id — note: demo transport never delivers, so it will time out without a bus), `discover_agent()` stub, `handle_response()`.
 
 ---
 
-## 11. Setup From Scratch
+## 10. Setup From Scratch
 
 1. **Python + venv:** Python 3.10+ recommended.
    ```bash
@@ -374,7 +314,7 @@ Watch-history JSON: `[{"movie_id": 550, "rating": 9.0}, …]`. Sample: `hist.jso
    ```bash
    cp .env.example .env
    # edit .env: TMDB_API_KEY=...  DEEPSEEK_API_KEY=...
-   # Both optional (see §14), but live discovery + LLM quality need them.
+   # Both optional (see §13), but live discovery + LLM quality need them.
    # Get TMDB key: https://www.themoviedb.org/settings/api
    ```
 3. **Datasets:** place `tmdb_5000_movies.csv`, `tmdb_5000_credits.csv`, `genome-tags.csv`, `genome-scores.csv`, `links.csv` in `data/` (repo already includes them).
@@ -387,8 +327,6 @@ Watch-history JSON: `[{"movie_id": 550, "rating": 9.0}, …]`. Sample: `hist.jso
    ```bash
    python main.py recommend --user-id demo --watch-history hist.json --top-k 5 \
      --natural-language "funny 90s space comedy" --subscriptions netflix
-   python main.py recommend-biz --user-id demo --partner-id airline_default \
-     --watch-history hist.json --top-k 5
    python main.py mcp            # → http://0.0.0.0:8000, try GET /mcp/tools
    python main.py a2a            # prints agent card
    pytest tests/ -v
@@ -396,7 +334,7 @@ Watch-history JSON: `[{"movie_id": 550, "rating": 9.0}, …]`. Sample: `hist.jso
 
 ---
 
-## 12. Usage Cookbook
+## 11. Usage Cookbook
 
 ```bash
 # Search only (no history → search_movies path)
@@ -406,17 +344,6 @@ python main.py recommend --user-id u1 --genre Action --region US --language en \
 # Personalized + NL
 python main.py recommend --user-id u1 --watch-history hist.json --top-k 10 \
   --natural-language "mind-bending sci-fi with time travel, highly rated"
-
-# Business path (adds session_id + business_actions_triggered to output)
-python main.py recommend-biz --user-id u1 --partner-id hotel_default \
-  --watch-history hist.json --natural-language "feel-good romantic comedy from the 2000s"
-
-# Churn / actions / events
-python main.py assess-churn --user-id u1 --partner-id airline_default
-python main.py trigger-action --user-id u1 --partner-id airline_default \
-  --action-type offer_bundle_upgrade --trigger churn_risk_high \
-  --reasoning "High churn score, basic tier" --payload '{"current_tier":"basic"}'
-python main.py ingest-events --events-file events.json
 ```
 
 ```bash
@@ -427,21 +354,21 @@ curl -X POST http://localhost:8000/mcp/tools/search_movies \
   -d '{"genre":"Comedy","region":"US","max_results":5}'
 ```
 
-Output shape (`get_recommendations`): `{recommendations:[{rank, movie:{id,title,overview,genres,vote_average,vote_count,release_date,director,cast}, reasoning, score}], user_profile:{top_genres, top_keywords, avg_rating, watch_count}, extracted_features?, session_id?, business_actions_triggered?}`.
+Output shape (`get_recommendations`): `{recommendations:[{rank, movie:{id,title,overview,genres,vote_average,vote_count,release_date,director,cast}, reasoning, score}], user_profile:{top_genres, top_keywords, avg_rating, watch_count}, extracted_features?}`.
 
 ---
 
-## 13. Testing
+## 12. Testing
 
 ```bash
 pytest tests/ -v
 ```
 
-`tests/test_recommender.py` covers (with mocks, no API keys needed): empty/populated preference extraction + rating weights; IMDb halving below 100 votes + popularity ordering; semantic index build/similar-query/synonym expansion (asserts 384-dim MiniLM embeddings — will download model on first run); template branches (genre vs. high-rating); diversity caps; `_build_query_from_profile` concatenation; `_summarize_watch_history` ("3 movies… 8.5"). Business modules (rules/churn/actions/events), MCP routes, and A2A handlers have **no** tests — manual CLI/MCP curl is the current verification path.
+`tests/test_recommender.py` covers (with mocks, no API keys needed): empty/populated preference extraction + rating weights; IMDb halving below 100 votes + popularity ordering; semantic index build/similar-query/synonym expansion (asserts 384-dim MiniLM embeddings — will download model on first run); template branches (genre vs. high-rating); diversity caps; `_build_query_from_profile` concatenation; `_summarize_watch_history` ("3 movies… 8.5"). MCP routes and A2A handlers have **no** tests — manual CLI/MCP curl is the current verification path.
 
 ---
 
-## 14. Fallback & Offline Behavior
+## 13. Fallback & Offline Behavior
 
 | Missing / failure | Behavior |
 |---|---|
@@ -454,18 +381,15 @@ pytest tests/ -v
 
 ---
 
-## 15. How to Extend It
+## 14. How to Extend It
 
-- **New partner:** add a `PartnerConfig` in `create_default_rules_engine()` (`src/business/rules_engine.py:286`) with filters/weights/regions/ratings/runtime/offline/session limits + `BusinessRule`s; verify via `get_partner_config` MCP tool and `recommend-biz --partner-id <new>`.
-- **New rule:** append `BusinessRule(rule_id, name, condition{…operators…}, actions, priority, partner_id)`; conditions are evaluated by `BusinessRule.matches()` against the rule context built in `_build_rule_context()` (party/device/flight/hotel/tier/time/offline/bandwidth/accessibility + NL genres/decades/mood).
-- **New business action:** add `ActionType` + `ActionExecutor` subclass in `src/business/actions.py`, register in `create_default_action_engine()`; expose via `trigger_business_action` (MCP/A2A/CLI share the same engine call).
-- **New analytics event:** add `EventType`, emit with `build_event()`, optionally add an `EventIngestion` handler (persistence, warehouse sync, churn feature updater).
-- **Ranking tweak:** prefer `config.yaml` weights/thresholds/stage sizes/diversity caps first; code second (`ranker.py` stage functions, `preference_extractor.py` weighting). Re-run `pytest` + a `recommend-biz` golden query.
-- **New MCP/A2A surface:** add Pydantic params + `MCPToolType` + handler in `mcp_server.py`, and a matching `AgentCapability` + `_handle_task_request` branch in `a2a_protocol.py` — both delegate to `src/pipeline/recommender.py` or `src/business/*`, so no pipeline duplication.
+- **Ranking tweak:** prefer `config.yaml` weights/thresholds/stage sizes/diversity caps first; code second (`ranker.py` stage functions, `preference_extractor.py` weighting). Re-run `pytest` + a `recommend` golden query.
+- **Better NL parsing:** improve `NLFeatureExtractor` prompts/validators or swap the regex fallback for a local model; `map_to_vocabulary()` keeps new terms grounded in the CountVectorizer vocab.
+- **New MCP/A2A surface:** add Pydantic params + `MCPToolType` + handler in `mcp_server.py`, and a matching `AgentCapability` + `_handle_task_request` branch in `a2a_protocol.py` — both delegate to `src/pipeline/recommender.py`, so no pipeline duplication.
 
 ---
 
-## 16. Glossary
+## 15. Glossary
 
 - **Stage-1 / Stage-2:** query-similarity pre-rank (IMDb+TF-IDF+semantic+popularity) → watch-history re-rank (content+keyword boost). `stage1_candidates` controls the handoff size.
 - **TF-IDF / CountVectorizer:** bag-of-words text similarity between the query and each movie's combined text.
@@ -475,22 +399,16 @@ pytest tests/ -v
 - **DeepSeek:** OpenAI-compatible LLM used for NL parsing + explanation generation.
 - **MCP:** Model Context Protocol — exposes typed tools over HTTP for other agents/apps.
 - **A2A:** Agent-to-Agent protocol — task/discovery message envelope for inter-agent calls.
-- **Partner:** a B2B customer (airline/hotel/streamer) with its own catalog rules.
-- **Churn:** user abandoning the partner's service; scored 0–1 with retention playbooks.
 - **DiversityFilter:** anti-monotony cap (≤3 same genre, ≤2 same director in a row-walk).
 
 ---
 
-*Maintainer notes: keep this file in sync when adding CLI subcommands, MCP tools, A2A capabilities, partners, weights, or data files. Secrets belong in `.env` (git-ignored), never in `config.yaml` or docs.*
-
-
+*Maintainer notes: keep this file in sync when adding CLI subcommands, MCP tools, A2A capabilities, weights, or data files. Secrets belong in `.env` (git-ignored), never in `config.yaml` or docs.*
 
 
 
 ## TLDR
 
-**Pipeline (base):** Watch history → user profile (genres/keywords/directors/cast) + NL query → structured filters → TMDB live candidates (or local pool fallback) → Stage-1 rank (IMDb + TF-IDF + semantic + popularity) → Stage-2 boost (watch-history content/keyword overlap) → Diversity filter (≤3 same genre, ≤2 same director) → LLM explanation per movie.
+**Pipeline:** Watch history → user profile (genres/keywords/directors/cast) + NL query → structured filters → TMDB live candidates (or local pool fallback) → Stage-1 rank (IMDb + TF-IDF + semantic + popularity) → Stage-2 boost (watch-history content/keyword overlap) → Diversity filter (≤3 same genre, ≤2 same director) → LLM explanation per movie.
 
-**Business path (`BusinessMovieRecommender`):** Same pipeline + partner rules filter, session tracking, churn-risk scoring, auto business actions, and analytics event ingestion.
-
-**Features:** Personalized top-K recs, natural-language search, semantic/synonym matching, 2-stage ranking, LLM reasons with template fallback, partner content rules (airline/hotel/streaming), session/device/party context, churn prediction + retention actions, queued analytics events, 3 interfaces (CLI 7 cmds, MCP 11 tools, A2A 10 caps), graceful offline mode without API keys.
+**Features:** Personalized top-K recs, natural-language search, semantic/synonym matching, 2-stage ranking, LLM reasons with template fallback, 3 interfaces (CLI 4 cmds, MCP 4 tools, A2A 3 caps), graceful offline mode without API keys.
