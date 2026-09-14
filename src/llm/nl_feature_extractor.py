@@ -449,20 +449,27 @@ RULES:
         year_min = None
         year_max = None
         
-        # Check "90s", "80s", "2000s"
-        decade_matches = re.findall(r'\b(19\d{1}|20[0-2]\d)s\b', text_lower)
-        if not decade_matches:
-            decade_matches = re.findall(r'\b([2-9]0)s\b', text_lower)
-            decade_matches = [f"19{m}" if int(m) >= 30 else f"20{m}" for m in decade_matches]
-            
-        for d in decade_matches:
-            year = int(d)
-            base_dec = (year // 10) * 10
-            decades.append(f"{base_dec}s")
-            if year_min is None or base_dec < year_min:
-                year_min = base_dec
-            if year_max is None or (base_dec + 9) > year_max:
-                year_max = base_dec + 9
+        # Check explicit year ranges (e.g., "from 1995 to 2005", "between 1990 and 2000", "1995-2005")
+        range_match = re.search(r'\b(?:from|between)?\s*(19\d\d|20[0-2]\d)\s*(?:to|and|-)\s*(19\d\d|20[0-2]\d)\b', text_lower)
+        if range_match:
+            y1, y2 = int(range_match.group(1)), int(range_match.group(2))
+            year_min = min(y1, y2)
+            year_max = max(y1, y2)
+        else:
+            # Check "90s", "80s", "2000s"
+            decade_matches = re.findall(r'\b(19\d{1}|20[0-2]\d)s\b', text_lower)
+            if not decade_matches:
+                decade_matches = re.findall(r'\b([2-9]0)s\b', text_lower)
+                decade_matches = [f"19{m}" if int(m) >= 30 else f"20{m}" for m in decade_matches]
+                
+            for d in decade_matches:
+                year = int(d)
+                base_dec = (year // 10) * 10
+                decades.append(f"{base_dec}s")
+                if year_min is None or base_dec < year_min:
+                    year_min = base_dec
+                if year_max is None or (base_dec + 9) > year_max:
+                    year_max = base_dec + 9
         
         # Runtime extraction
         max_runtime = None
@@ -514,7 +521,8 @@ RULES:
         stopwords = {
             "i", "want", "to", "watch", "a", "an", "the", "movie", "film", 
             "with", "about", "like", "similar", "something", "good", "great",
-            "recommend", "give", "me", "show", "movies", "films", "please"
+            "recommend", "give", "me", "show", "movies", "films", "please",
+            "from", "under", "mins", "minutes", "hour", "hours", "but", "not", "without", "than"
         }
         words = [w for w in re.findall(r'\b[a-z]{3,}\b', text_lower) if w not in stopwords]
         keywords = words[:15]
