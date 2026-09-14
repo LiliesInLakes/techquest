@@ -269,6 +269,24 @@ class MovieRanker:
             if isinstance(c, str):
                 features.append(c.strip().lower())
 
+        # Tags (MovieLens)
+        ml_tags = meta.get("movielens_tags", "")
+        if isinstance(ml_tags, str) and ml_tags.strip():
+            features.extend([t.strip().lower() for t in ml_tags.split(",") if t.strip()][:15])
+        elif isinstance(ml_tags, list):
+            features.extend([str(t).strip().lower() for t in ml_tags[:15] if str(t).strip()])
+        for tag in meta.get("tags", []):
+            if isinstance(tag, str):
+                features.append(tag.strip().lower())
+
+        # Themes & Tones
+        for th in meta.get("themes", meta.get("theme", [])):
+            if isinstance(th, str):
+                features.append(th.strip().lower())
+        for tn in meta.get("tones", meta.get("tone", meta.get("mood", []))):
+            if isinstance(tn, str):
+                features.append(tn.strip().lower())
+
         if not features:
             return 1.0
 

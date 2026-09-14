@@ -74,7 +74,11 @@ class MovieRecommender:
             self.feature_matrix = self.matrix_builder.build_and_save()
             self.semantic_index = self.matrix_builder.build_semantic_index(self.feature_matrix)
         
-        self.semantic_search = SemanticKeywordSearch(threshold=0.65)
+        model_name = self.rec_config.get("semantic_model_name", "multi-qa-mpnet-base-dot-v1")
+        self.semantic_search = SemanticKeywordSearch(
+            model_name=model_name,
+            threshold=self.rec_config.get("semantic_similarity_threshold", 0.65)
+        )
         all_keywords = []
         for meta in self.feature_matrix.movie_metadata.values():
             all_keywords.extend(meta.get('keywords', []))
@@ -175,10 +179,13 @@ class MovieRecommender:
         subscriptions: List[str] = None,
         region: str = "US",
         language: str = "en",
-        top_k: int = 10,
-        natural_language: str = None
+        top_k: Optional[int] = None,
+        natural_language: str = None,
+        excluded_movie_ids: Optional[List[int]] = None
     ) -> Dict[str, Any]:
         await self.initialize()
+        if top_k is None:
+            top_k = int(self.rec_config.get("final_recommendations", 1))
         
         preferences = preferences or {}
         subscriptions = subscriptions or []
@@ -249,6 +256,9 @@ class MovieRecommender:
         )
         
         final_ranked = self.diversity_filter.filter(final_ranked, self.feature_matrix)
+        if excluded_movie_ids:
+            excluded_set = set(excluded_movie_ids)
+            final_ranked = [m for m in final_ranked if m.movie_id not in excluded_set]
         top_movies = self.ranker.get_top_k(final_ranked, top_k)
         
         movie_dicts = []
@@ -305,24 +315,80 @@ class MovieRecommender:
                 rank=i + 1
             ))
         
+        top_pick_verdict = None
+        if movie_dicts:
+            top_pick_verdict = await self._generate_top_pick_verdict(
+                movie_dicts[0],
+                user_profile,
+                ranking_factors[0] if ranking_factors else {},
+                user_query,
+                watch_history_summary
+            )
+
+        single_rec = {
+            'rank': 1,
+            'title': recommendations[0].movie.get('title'),
+            'movie': recommendations[0].movie,
+            'reasoning': recommendations[0].reasoning,
+            'verdict': top_pick_verdict,
+            'score': round(recommendations[0].score, 4)
+        } if recommendations else None
+
         return {
             'recommendations': [
                 {
                     'rank': r.rank,
                     'movie': r.movie,
                     'reasoning': r.reasoning,
+                    'verdict': top_pick_verdict if r.rank == 1 else None,
                     'score': round(r.score, 4)
                 }
                 for r in recommendations
             ],
+            'recommendation': single_rec,
+            'top_pick': single_rec,
             'user_profile': {
                 'top_genres': user_profile.top_genres[:5],
                 'top_keywords': user_profile.top_keywords[:10],
+                'top_tags': getattr(user_profile, 'top_tags', [])[:10],
+                'top_themes': getattr(user_profile, 'top_themes', [])[:10],
+                'top_tones': getattr(user_profile, 'top_tones', [])[:10],
+                'negative_preferences': getattr(user_profile, 'negative_preferences', {}),
                 'avg_rating': user_profile.avg_rating,
                 'watch_count': user_profile.watch_count
             },
             'extracted_features': extracted_features.to_dict() if extracted_features else None
         }
+
+    async def get_replacement_recommendation(
+        self,
+        user_id: str,
+        excluded_movie_ids: List[int],
+        natural_language: Optional[str] = None,
+        subscriptions: List[str] = None,
+        region: str = "US",
+        language: str = "en"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetches the next highest ranked recommendation that is not in excluded_movie_ids.
+        Used for background replacement when a user skips / rejects a movie.
+        """
+        recs_data = await self.get_recommendations(
+            user_id=user_id,
+            subscriptions=subscriptions or [],
+            region=region,
+            language=language,
+            top_k=1,
+            natural_language=natural_language,
+            excluded_movie_ids=excluded_movie_ids
+        )
+        recs = recs_data.get("recommendations", [])
+        if recs:
+            rec_item = recs[0]
+            if recs_data.get("top_pick") and recs_data["top_pick"].get("verdict"):
+                rec_item["verdict"] = recs_data["top_pick"]["verdict"]
+            return rec_item
+        return None
 
     async def _get_candidate_movies_stage1(
         self,
@@ -579,6 +645,27 @@ class MovieRecommender:
                 )
                 for m, f in zip(movies, ranking_factors)
             ]
+
+    async def _generate_top_pick_verdict(
+        self,
+        top_movie: Dict[str, Any],
+        user_profile: UserPreferenceProfile,
+        ranking_factors: Dict[str, float],
+        user_query: str,
+        watch_history_summary: str
+    ) -> str:
+        if not top_movie:
+            return ""
+        if self.reasoner:
+            try:
+                return await self.reasoner.generate_top_pick_verdict(
+                    top_movie, user_profile, ranking_factors, user_query, watch_history_summary
+                )
+            except Exception:
+                pass
+        return self.template_engine.generate_top_pick(
+            top_movie, user_profile, ranking_factors, user_query
+        )
 
     def analyze_user_preferences(
         self,

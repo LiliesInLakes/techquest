@@ -38,7 +38,7 @@ async def run_recommendation_cli(
     language: str = "en",
     subscriptions: list = None,
     watch_history: list = None,
-    top_k: int = 10,
+    top_k: int = 1,
     natural_language: str = None
 ):
     from src.pipeline.recommender import MovieRecommender
@@ -54,7 +54,71 @@ async def run_recommendation_cli(
         top_k=top_k,
         natural_language=natural_language
     )
-    print(json.dumps(result, indent=2))
+
+    if top_k == 1 and result.get("recommendation"):
+        rec = result["recommendation"]
+        m = rec.get("movie", {})
+        year = str(m.get("release_date", ""))[:4]
+        genres = [g if isinstance(g, str) else g.get('name') for g in m.get('genres', [])]
+        print("\n" + "=" * 65)
+        print(f" [FINAL RECOMMENDATION]: {m.get('title')} ({year})")
+        print(f" [Score]: {rec.get('score')} | [Rating]: {m.get('vote_average')}/10 ({m.get('vote_count', 0)} votes)")
+        if genres:
+            print(f" [Genres]: {', '.join(filter(None, genres))}")
+        if m.get("streaming_platforms"):
+            print(f" [Streaming]: {', '.join(m.get('streaming_platforms'))}")
+        print("-" * 65)
+        if rec.get("verdict"):
+            print(f" [AI Verdict]:\n {rec.get('verdict')}\n")
+        if rec.get("reasoning"):
+            print(f" [Why You'll Like It]:\n {rec.get('reasoning')}")
+        print("=" * 65)
+        mid = m.get('id') or m.get('movie_id')
+        print(f" Don't want to watch this movie? Get a new suggestion:")
+        print(f"   python main.py reject --user-id {user_id} --movie-id {mid}")
+        print("=" * 65 + "\n")
+    else:
+        print(json.dumps(result, indent=2))
+
+
+async def run_reject_cli(
+    user_id: str,
+    movie_id: int,
+    reason: str = "User skipped/rejected",
+    natural_language: str = None
+):
+    from src.memory.service import UserMemoryService
+    from src.pipeline.recommender import MovieRecommender
+
+    mem = UserMemoryService()
+    event, prof = mem.record_rejection(user_id=user_id, movie_id=movie_id, reason=reason)
+    print(f"\n[Recorded Rejection for Movie #{movie_id}]")
+    print(f"Taste penalties updated in user memory profile.")
+
+    recommender = MovieRecommender()
+    replacement = await recommender.get_replacement_recommendation(
+        user_id=user_id,
+        excluded_movie_ids=[movie_id],
+        natural_language=natural_language
+    )
+
+    if replacement and replacement.get("movie"):
+        m = replacement["movie"]
+        year = str(m.get("release_date", ""))[:4]
+        genres = [g if isinstance(g, str) else g.get('name') for g in m.get('genres', [])]
+        print("\n" + "=" * 65)
+        print(f" [NEW RECOMMENDATION]: {m.get('title')} ({year})")
+        print(f" [Score]: {replacement.get('score')} | [Rating]: {m.get('vote_average')}/10")
+        if genres:
+            print(f" [Genres]: {', '.join(filter(None, genres))}")
+        print("-" * 65)
+        if replacement.get("verdict"):
+            print(f" [AI Verdict]:\n {replacement.get('verdict')}\n")
+        if replacement.get("reasoning"):
+            print(f" [Why You'll Like It]:\n {replacement.get('reasoning')}")
+        print("=" * 65 + "\n")
+    else:
+        print("No replacement recommendation available for the current query.\n")
 
 
 def run_precompute():
@@ -115,8 +179,14 @@ def main():
     cli_parser.add_argument("--language", default="en", help="Language code")
     cli_parser.add_argument("--subscriptions", nargs="+", default=[], help="Subscription services")
     cli_parser.add_argument("--watch-history", type=str, help="Path to watch history JSON")
-    cli_parser.add_argument("--top-k", type=int, default=10, help="Number of recommendations")
+    cli_parser.add_argument("--top-k", type=int, default=1, help="Number of recommendations (default: 1)")
     cli_parser.add_argument("--natural-language", type=str, help="Natural language query (e.g., 'funny 90s space comedy')")
+
+    reject_parser = subparsers.add_parser("reject", help="Reject a movie, learn negative preferences, and suggest a replacement")
+    reject_parser.add_argument("--user-id", required=True, help="User ID")
+    reject_parser.add_argument("--movie-id", type=int, required=True, help="TMDB Movie ID")
+    reject_parser.add_argument("--reason", default="User skipped/rejected", help="Optional rejection reason")
+    reject_parser.add_argument("--natural-language", type=str, help="Natural language query")
 
     prof_parser = subparsers.add_parser("profile", help="View user profile memory")
     prof_parser.add_argument("--user-id", required=True, help="User ID")
@@ -149,6 +219,13 @@ def main():
         run_log_event(args.user_id, args.movie_id, args.event)
     elif args.command == "rate":
         run_rate(args.user_id, args.movie_id, args.rating, args.review)
+    elif args.command == "reject":
+        asyncio.run(run_reject_cli(
+            user_id=args.user_id,
+            movie_id=args.movie_id,
+            reason=args.reason,
+            natural_language=args.natural_language
+        ))
     elif args.command == "recommend":
         watch_history = None
         if args.watch_history:

@@ -16,6 +16,8 @@ EVENT_WEIGHTS = {
     EventType.MOVIE_VIEWED: 0.15,
     EventType.ADDED_TO_WATCHLIST: 0.30,
     EventType.MARKED_WATCHED: 0.50,
+    EventType.REJECTED: 0.40,
+    EventType.NOT_INTERESTED: 0.40,
 }
 
 # Rating mapping spectrum
@@ -27,6 +29,21 @@ RATING_MAP = {
     2.0: (False, 0.0, True, 0.4, False),
     1.0: (False, 0.0, True, 1.0, False),
     0.0: (False, 0.0, True, 1.0, False),
+}
+
+COMMON_THEMES = {
+    "time travel", "space exploration", "artificial intelligence", "dystopia", "alien invasion",
+    "survival", "revenge", "heist", "coming of age", "redemption", "conspiracy",
+    "post-apocalyptic", "virtual reality", "identity", "cyberpunk", "haunted house",
+    "parallel universe", "mind control", "serial killer", "superhero", "first contact",
+    "alien", "robot", "investigation", "corruption", "apocalypse", "monster", "magic"
+}
+
+COMMON_TONES = {
+    "dark", "gritty", "atmospheric", "cerebral", "mind-bending", "psychological",
+    "suspenseful", "uplifting", "satirical", "quirky", "heartwarming", "melancholic",
+    "bleak", "fast-paced", "slow burn", "epic", "campy", "surreal", "tense", "humorous",
+    "poetic", "claustrophobic", "noir", "inspirational", "philosophical", "chilling"
 }
 
 
@@ -152,7 +169,94 @@ class UserMemoryEngine:
         if lang and isinstance(lang, str):
             extracted[FeatureType.LANGUAGE.value].append(lang.strip().lower())
 
+        # Tags (MovieLens Genome tags / explicit tags)
+        ml_tags = metadata.get("movielens_tags", "")
+        if isinstance(ml_tags, str) and ml_tags.strip():
+            raw_tags = [t.strip().lower() for t in ml_tags.split(",") if t.strip()]
+            extracted[FeatureType.TAG.value].extend(raw_tags[:15])
+        elif isinstance(ml_tags, list):
+            extracted[FeatureType.TAG.value].extend([str(t).strip().lower() for t in ml_tags[:15] if str(t).strip()])
+        explicit_tags = metadata.get("tags", [])
+        if isinstance(explicit_tags, list):
+            for t in explicit_tags:
+                if isinstance(t, str) and t.strip():
+                    extracted[FeatureType.TAG.value].append(t.strip().lower())
+
+        # Combine text for theme and tone pattern matching
+        overview_text = str(metadata.get("overview", "")).lower()
+        all_kw_text = " ".join(extracted.get(FeatureType.KEYWORD.value, [])) + " " + " ".join(extracted.get(FeatureType.TAG.value, []))
+        combined_text = f"{overview_text} {all_kw_text}"
+
+        # Themes
+        themes = metadata.get("themes", metadata.get("theme", []))
+        if isinstance(themes, list):
+            for th in themes:
+                if isinstance(th, str) and th.strip():
+                    extracted[FeatureType.THEME.value].append(th.strip().lower())
+        elif isinstance(themes, str) and themes.strip():
+            extracted[FeatureType.THEME.value].append(themes.strip().lower())
+        for theme_phrase in COMMON_THEMES:
+            if theme_phrase in combined_text and theme_phrase not in extracted[FeatureType.THEME.value]:
+                extracted[FeatureType.THEME.value].append(theme_phrase)
+
+        # Tones & Moods
+        tones = metadata.get("tones", metadata.get("tone", metadata.get("mood", [])))
+        if isinstance(tones, list):
+            for tn in tones:
+                if isinstance(tn, str) and tn.strip():
+                    extracted[FeatureType.TONE.value].append(tn.strip().lower())
+        elif isinstance(tones, str) and tones.strip():
+            extracted[FeatureType.TONE.value].append(tones.strip().lower())
+        for tone_word in COMMON_TONES:
+            if tone_word in combined_text and tone_word not in extracted[FeatureType.TONE.value]:
+                extracted[FeatureType.TONE.value].append(tone_word)
+
         return dict(extracted)
+
+    def process_rejection_event(
+        self,
+        event: WatchEvent,
+        profile: UserProfileMemory,
+        movie_metadata: Dict[str, Any],
+        penalty: float = 0.5,
+        current_time: Optional[float] = None
+    ) -> UserProfileMemory:
+        """
+        Processes a movie rejection / skip event by applying negative penalty updates
+        across all features of the rejected movie (genres, tags, themes, tones, keywords, directors).
+        """
+        current_time = current_time or event.timestamp
+        features = self.extract_features_from_metadata(movie_metadata)
+        if not features:
+            return profile
+
+        profile.total_interactions += 1
+        profile.updated_at = current_time
+
+        for f_type, f_values in features.items():
+            if f_type not in profile.negative_preferences:
+                profile.negative_preferences[f_type] = {}
+
+            for f_val in f_values:
+                neg_pref = profile.negative_preferences[f_type].get(f_val)
+                curr_penalty = neg_pref.penalty_weight if neg_pref else 0.0
+                curr_neg_count = neg_pref.interaction_count if neg_pref else 0
+
+                new_penalty = asymptotic_addition_update(curr_penalty, penalty, self.alpha * 2.5)
+                profile.negative_preferences[f_type][f_val] = NegativePreference(
+                    feature_type=FeatureType(f_type) if f_type in [ft.value for ft in FeatureType] else FeatureType.GENRE,
+                    feature_value=f_val,
+                    penalty_weight=max(curr_penalty, new_penalty),
+                    interaction_count=curr_neg_count + 1,
+                    last_updated=current_time
+                )
+
+                # Slightly dampen positive score if it exists in long_term_preferences
+                if f_type in profile.long_term_preferences and f_val in profile.long_term_preferences[f_type]:
+                    pos_pref = profile.long_term_preferences[f_type][f_val]
+                    pos_pref.score = max(0.0, pos_pref.score * (1.0 - 0.3 * penalty))
+
+        return profile
 
     def process_watch_event(
         self,
@@ -168,6 +272,10 @@ class UserMemoryEngine:
         Includes 30-min duplicate damping and 24-hr feature binge damping with asymptotic addition.
         """
         current_time = current_time or event.timestamp
+        if event.event_type in (EventType.REJECTED, EventType.NOT_INTERESTED):
+            penalty = event.signal_weight if event.signal_weight > 0 else 0.5
+            return self.process_rejection_event(event, profile, movie_metadata, penalty=penalty, current_time=current_time)
+
         features = self.extract_features_from_metadata(movie_metadata)
         if not features:
             return profile

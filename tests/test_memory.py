@@ -235,3 +235,54 @@ class TestMemoryStorageAndService:
             prof_before.long_term_preferences["genre"]["animation"].score
         )
 
+    def test_rejection_negative_penalty(self, test_db_path):
+        service = UserMemoryService(db_path=test_db_path)
+        user_id = "reject_test_user"
+
+        meta = {
+            "title": "Unwanted Film",
+            "genres": ["Horror", "Gore"],
+            "keywords": ["jump scares"],
+            "tags": ["slasher"],
+            "themes": ["serial killer"],
+            "tones": ["bleak"]
+        }
+        event, prof = service.record_rejection(user_id, 404, reason="Too violent", metadata=meta)
+        assert event.event_type == EventType.REJECTED
+        assert "genre" in prof.negative_preferences
+        assert "horror" in prof.negative_preferences["genre"]
+        assert prof.negative_preferences["genre"]["horror"].penalty_weight > 0.0
+        assert "theme" in prof.negative_preferences
+        assert "serial killer" in prof.negative_preferences["theme"]
+        assert "tone" in prof.negative_preferences
+        assert "bleak" in prof.negative_preferences["tone"]
+
+        summary = service.get_user_profile_summary(user_id)
+        assert len(summary["negative_penalties"]) >= 3
+        penalized_names = [p["name"] for p in summary["negative_penalties"]]
+        assert "horror" in penalized_names
+        assert "bleak" in penalized_names
+
+    def test_multidimensional_tags_themes_tones(self, test_db_path):
+        service = UserMemoryService(db_path=test_db_path)
+        user_id = "multidim_user"
+
+        meta = {
+            "title": "Interstellar Journey",
+            "genres": ["Science Fiction"],
+            "movielens_tags": "space exploration, mind-bending, philosophical",
+            "overview": "A dark, atmospheric journey exploring space exploration and time travel.",
+            "director": ["Christopher Nolan"]
+        }
+        service.record_interaction(user_id, 505, EventType.MARKED_WATCHED, metadata=meta)
+        service.record_rating(user_id, 505, rating=5.0)
+
+        summary = service.get_user_profile_summary(user_id)
+        tag_names = [t["name"] for t in summary["tags"]]
+        theme_names = [th["name"] for th in summary["themes"]]
+        tone_names = [tn["name"] for tn in summary["tones"]]
+
+        assert "space exploration" in tag_names or "space exploration" in theme_names
+        assert "time travel" in theme_names
+        assert "dark" in tone_names or "atmospheric" in tone_names
+

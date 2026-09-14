@@ -58,7 +58,8 @@ class RecommendRequest(BaseModel):
     region: str = "US"
     language: str = "en"
     subscriptions: List[str] = []
-    top_k: int = 6
+    top_k: int = 1
+    excluded_movie_ids: List[int] = []
 
 
 class InteractionRequest(BaseModel):
@@ -79,6 +80,16 @@ class RateRequest(BaseModel):
 class SubscriptionsRequest(BaseModel):
     user_id: str = "demo"
     subscriptions: List[str]
+
+
+class RejectRequest(BaseModel):
+    user_id: str = "demo"
+    movie_id: int
+    reason: Optional[str] = None
+    current_movie_ids: List[int] = []
+    natural_language: Optional[str] = None
+    subscriptions: List[str] = []
+    metadata: Optional[Dict[str, Any]] = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -127,7 +138,8 @@ async def recommend_movies(req: RecommendRequest):
             region=req.region,
             language=req.language,
             top_k=req.top_k,
-            natural_language=req.natural_language
+            natural_language=req.natural_language,
+            excluded_movie_ids=req.excluded_movie_ids
         )
         
         # Record search exploration keywords/tropes in user memory
@@ -146,52 +158,63 @@ async def recommend_movies(req: RecommendRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/reject")
+async def reject_movie(req: RejectRequest):
+    try:
+        mem = get_memory_service()
+        rec = await get_recommender()
+
+        # 1. Record rejection event and apply negative penalty updates across all features
+        event, updated_prof = mem.record_rejection(
+            user_id=req.user_id,
+            movie_id=req.movie_id,
+            reason=req.reason,
+            metadata=req.metadata
+        )
+
+        # 2. Exclude all current movies + rejected movie from replacement
+        excluded = list(set(req.current_movie_ids + [req.movie_id]))
+        subs = req.subscriptions if req.subscriptions else getattr(updated_prof, "subscriptions", ["Netflix", "Prime Video", "Disney+"])
+
+        # 3. Pull fresh replacement in background
+        replacement = await rec.get_replacement_recommendation(
+            user_id=req.user_id,
+            excluded_movie_ids=excluded,
+            natural_language=req.natural_language,
+            subscriptions=subs
+        )
+
+        # 4. Get updated profile summary
+        summary = mem.get_user_profile_summary(req.user_id)
+
+        return {
+            "status": "success",
+            "rejected_movie_id": req.movie_id,
+            "replacement": replacement,
+            "profile_summary": summary
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/profile/{user_id}")
 async def get_user_profile(user_id: str):
     try:
         mem = get_memory_service()
+        summary = mem.get_user_profile_summary(user_id)
         profile = mem.get_user_profile(user_id)
         serialized = mem._serialize_profile(profile)
-        
-        # Calculate dynamic beta & learning curve metrics
-        n = profile.total_interactions
-        beta = 0.40 + 0.60 * max(0.0, 1.0 - n / 10.0)
-        conf_pct = round((n / (n + 10.0)) * 100, 1) if (n + 10.0) > 0 else 0.0
 
-        if n < 4:
-            stage_text = "🌱 Initial Discovery"
-            stability_text = "Exploration"
-        elif n < 10:
-            stage_text = "⚡ Active Calibration"
-            stability_text = "Balancing"
-        else:
-            stage_text = "🎯 Tuned Profile"
-            stability_text = "Calibrated"
-
-        # Calculate combined affinities & genres
-        combined = mem.get_combined_preference_profile(user_id)
-        combined_keywords = [
-            {"name": k, "score": round(score, 3)} 
-            for k, score in getattr(combined, "top_keywords", []) if score > 0
-        ]
-        combined_genres = [
-            {"name": g, "score": round(score, 3)} 
-            for g, score in getattr(combined, "top_genres", []) if score > 0
-        ]
-        
         return {
             "profile": json.loads(serialized),
-            "combined_affinities": combined_keywords,
-            "combined_genres": combined_genres,
-            "stats": {
-                "total_interactions": n,
-                "beta": round(beta, 3),
-                "short_term_pct": round(beta * 100, 1),
-                "long_term_pct": round((1 - beta) * 100, 1),
-                "confidence_pct": conf_pct,
-                "stage": stage_text,
-                "stability": stability_text
-            }
+            "summary": summary,
+            "combined_genres": summary.get("genres", []),
+            "combined_tags": summary.get("tags", []),
+            "combined_themes": summary.get("themes", []),
+            "combined_tones": summary.get("tones", []),
+            "combined_affinities": summary.get("keywords", []),
+            "negative_penalties": summary.get("negative_penalties", []),
+            "stats": summary.get("stats", {})
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

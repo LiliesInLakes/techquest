@@ -89,7 +89,7 @@ class TestSemanticKeywordSearch:
         
         assert len(search.keyword_list) == 5
         assert search.embedding_matrix is not None
-        assert search.embedding_matrix.shape == (5, 384)
+        assert search.embedding_matrix.shape == (5, 768)
 
     def test_find_similar_keywords(self):
         search = SemanticKeywordSearch(threshold=0.5)
@@ -134,6 +134,14 @@ class TestReasoningTemplateEngine:
         reasoning = engine.generate(movie, profile, factors)
         assert 'Great Movie' in reasoning
         assert '8.0' in reasoning
+
+    def test_generate_top_pick(self):
+        engine = ReasoningTemplateEngine()
+        movie = {'title': 'Top Choice', 'genres': ['Sci-Fi', 'Action'], 'vote_average': 8.5}
+        profile = Mock()
+        verdict = engine.generate_top_pick(movie, profile)
+        assert 'Top Choice' in verdict
+        assert '8.5' in verdict
 
 
 class TestDiversityFilter:
@@ -193,6 +201,47 @@ class TestMovieRecommender:
         assert "3 movies" in summary
         assert "2 of them" in summary
         assert "8.5" in summary
+
+    @pytest.mark.asyncio
+    async def test_get_replacement_recommendation_skips_excluded(self):
+        recommender = MovieRecommender()
+        
+        mock_rec_data = {
+            "recommendations": [
+                {
+                    "rank": 1,
+                    "movie": {"id": 200, "title": "Interstellar"},
+                    "reasoning": "High sci-fi affinity",
+                    "score": 0.95
+                }
+            ],
+            "top_pick": {
+                "rank": 1,
+                "title": "Interstellar",
+                "verdict": "Unmissable cosmic journey",
+                "score": 0.95
+            }
+        }
+        
+        with patch.object(recommender, "get_recommendations", AsyncMock(return_value=mock_rec_data)) as mock_get_rec:
+            replacement = await recommender.get_replacement_recommendation(
+                user_id="demo",
+                excluded_movie_ids=[100],
+                natural_language="space sci-fi"
+            )
+            
+            assert replacement is not None
+            assert replacement["movie"]["id"] == 200
+            assert replacement["verdict"] == "Unmissable cosmic journey"
+            mock_get_rec.assert_called_once_with(
+                user_id="demo",
+                subscriptions=[],
+                region="US",
+                language="en",
+                top_k=1,
+                natural_language="space sci-fi",
+                excluded_movie_ids=[100]
+            )
 
 
 if __name__ == "__main__":
