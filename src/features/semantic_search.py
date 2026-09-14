@@ -26,7 +26,7 @@ class SemanticSearchResult:
 
 
 class SemanticKeywordSearch:
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', threshold: float = 0.7):
+    def __init__(self, model_name: str = 'multi-qa-mpnet-base-dot-v1', threshold: float = 0.7):
         self.model = SentenceTransformer(model_name)
         self.threshold = threshold
         self.keyword_embeddings: Dict[str, np.ndarray] = {}
@@ -131,7 +131,7 @@ class SemanticKeywordSearch:
             pickle.dump(data, f)
 
     @classmethod
-    def load(cls, path: str, model_name: str = 'all-MiniLM-L6-v2') -> 'SemanticKeywordSearch':
+    def load(cls, path: str, model_name: str = 'multi-qa-mpnet-base-dot-v1') -> 'SemanticKeywordSearch':
         with open(path, 'rb') as f:
             data = pickle.load(f)
         

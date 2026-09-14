@@ -1,18 +1,67 @@
 # Environment / secrets
 .env
+.env.local
+*.env
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
 
 # Virtual environments
-venv/
 .venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# IDE / editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Local/generated files
 hist.json
 data/analytics/
 data/processed/
 
-#vs code settings
-.vscode/
+# Local databases
+*.db
+data/*.db
+data/memory.db
+movie_features.db
+
+# Local datasets
+data/ml-32m/
+
+# Testing & logs
+.pytest_cache/
+*.log
+
+# Local handoff / audit files
+TO_PUSH.md
+TO_PUSH_AUDIT.md
+build_progress.json
+run_stderr.log

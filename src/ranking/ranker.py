@@ -121,7 +121,7 @@ class MovieRanker:
         
         for movie in candidate_movies:
             movie_id = movie.get('id') or movie.get('movie_id')
-            if not movie_id or movie_id not in self.feature_matrix.movie_metadata:
+            if not movie_id:
                 continue
             
             scores = {}
@@ -175,6 +175,7 @@ class MovieRanker:
             movie_genres = set(g.lower() for g in rm.genres)
             
             genre_match = bool(extracted_genres & movie_genres) if extracted_genres else True
+            penalty = self.compute_negative_penalty(rm.movie_id, user_profile, feature_matrix)
             
             if genre_match:
                 history_score = self.preference_extractor.compute_content_similarity(
@@ -187,12 +188,13 @@ class MovieRanker:
                 boost = history_boost_factor * history_score
                 boost += history_boost_factor * 0.5 * keyword_overlap
                 
-                new_score = rm.score * (1.0 + boost)
+                new_score = rm.score * (1.0 + boost) * penalty
                 
                 new_factors = rm.reasoning_factors.copy()
                 new_factors['watch_history'] = history_score
                 new_factors['keyword_overlap'] = keyword_overlap
                 new_factors['history_boost'] = boost
+                new_factors['negative_penalty'] = penalty
                 
                 boosted.append(RankedMovie(
                     movie_id=rm.movie_id,
@@ -215,11 +217,11 @@ class MovieRanker:
                 new_factors = rm.reasoning_factors.copy()
                 new_factors['watch_history'] = 0.0
                 new_factors['keyword_overlap'] = 0.0
-                new_factors['history_boost'] = 0.0
+                non_match_weight = 0.2 if extracted_genres else 1.0
                 boosted.append(RankedMovie(
                     movie_id=rm.movie_id,
                     title=rm.title,
-                    score=rm.score,
+                    score=rm.score * non_match_weight * penalty,
                     imdb_score=rm.imdb_score,
                     tfidf_score=rm.tfidf_score,
                     watch_history_score=0.0,
@@ -236,6 +238,68 @@ class MovieRanker:
         
         boosted.sort(key=lambda x: x.score, reverse=True)
         return boosted
+
+    def compute_negative_penalty(self, movie_id: int, user_profile, feature_matrix=None) -> float:
+        """
+        Computes blended negative penalty:
+        penalty(movie) = 1.0 - min(0.9, 0.75 * max_{f in movie}(neg(f)) + 0.25 * (1/|F|) * sum_{f in movie} neg(f))
+        """
+        if user_profile is None or not hasattr(user_profile, "negative_preferences"):
+            return 1.0
+        neg_prefs = getattr(user_profile, "negative_preferences", {})
+        if not neg_prefs:
+            return 1.0
+
+        fm = feature_matrix or self.feature_matrix
+        if fm is None or not hasattr(fm, "movie_metadata") or movie_id not in fm.movie_metadata:
+            return 1.0
+
+        meta = fm.movie_metadata[movie_id]
+        features = []
+        for g in meta.get("genres", []):
+            if isinstance(g, str):
+                features.append(g.strip().lower())
+        for kw in meta.get("keywords", []):
+            if isinstance(kw, str):
+                features.append(kw.strip().lower())
+        for d in meta.get("director", []):
+            if isinstance(d, str):
+                features.append(d.strip().lower())
+        for c in meta.get("cast", [])[:5]:
+            if isinstance(c, str):
+                features.append(c.strip().lower())
+
+        # Tags (MovieLens)
+        ml_tags = meta.get("movielens_tags", "")
+        if isinstance(ml_tags, str) and ml_tags.strip():
+            features.extend([t.strip().lower() for t in ml_tags.split(",") if t.strip()][:15])
+        elif isinstance(ml_tags, list):
+            features.extend([str(t).strip().lower() for t in ml_tags[:15] if str(t).strip()])
+        for tag in meta.get("tags", []):
+            if isinstance(tag, str):
+                features.append(tag.strip().lower())
+
+        # Themes & Tones
+        for th in meta.get("themes", meta.get("theme", [])):
+            if isinstance(th, str):
+                features.append(th.strip().lower())
+        for tn in meta.get("tones", meta.get("tone", meta.get("mood", []))):
+            if isinstance(tn, str):
+                features.append(tn.strip().lower())
+
+        if not features:
+            return 1.0
+
+        neg_scores = [neg_prefs.get(f, 0.0) for f in features]
+        max_neg = max(neg_scores) if neg_scores else 0.0
+        avg_neg = (sum(neg_scores) / len(neg_scores)) if neg_scores else 0.0
+
+        if max_neg == 0.0 and avg_neg == 0.0:
+            return 1.0
+
+        raw_penalty = 0.75 * max_neg + 0.25 * avg_neg
+        penalty_factor = 1.0 - min(0.9, raw_penalty)
+        return max(0.1, min(1.0, penalty_factor))
 
     def _compute_all_scores(
         self,
@@ -256,6 +320,7 @@ class MovieRanker:
         scores['content'] = self._compute_content_score(movie_id, user_profile)
         scores['keyword_overlap'] = self._compute_keyword_overlap_score(movie_id, user_profile)
         scores['popularity'] = self._compute_popularity_score(movie)
+        scores['negative_penalty'] = self.compute_negative_penalty(movie_id, user_profile, self.feature_matrix)
         
         return scores
 
@@ -358,6 +423,9 @@ class MovieRanker:
         
         final += scores['popularity'] * self.config.popularity_boost
         
+        penalty = scores.get('negative_penalty', 1.0)
+        final = final * penalty
+        
         return final
 
     def get_top_k(self, ranked_movies: List[RankedMovie], k: int = 10) -> List[RankedMovie]:
@@ -388,7 +456,7 @@ class MovieRanker:
 
 
 class DiversityFilter:
-    def __init__(self, max_same_genre: int = 3, max_same_director: int = 2):
+    def __init__(self, max_same_genre: int = 5, max_same_director: int = 2):
         self.max_same_genre = max_same_genre
         self.max_same_director = max_same_director
 
@@ -398,12 +466,12 @@ class DiversityFilter:
         director_counts = {}
         
         for movie in ranked_movies:
-            meta = feature_matrix.movie_metadata.get(movie.movie_id, {})
-            genres = meta.get('genres', [])
+            meta = feature_matrix.movie_metadata.get(movie.movie_id, {}) if (feature_matrix and hasattr(feature_matrix, "movie_metadata")) else {}
+            genres = movie.genres or meta.get('genres', [])
             directors = meta.get('director', [])
             
-            genre_ok = all(genre_counts.get(g, 0) < self.max_same_genre for g in genres)
-            director_ok = all(director_counts.get(d, 0) < self.max_same_director for d in directors)
+            genre_ok = all(genre_counts.get(g, 0) < self.max_same_genre for g in genres) if genres else True
+            director_ok = all(director_counts.get(d, 0) < self.max_same_director for d in directors) if directors else True
             
             if genre_ok and director_ok:
                 selected.append(movie)
@@ -412,6 +480,8 @@ class DiversityFilter:
                 for d in directors:
                     director_counts[d] = director_counts.get(d, 0) + 1
         
+        if len(selected) < min(5, len(ranked_movies)):
+            return ranked_movies
         return selected
 
 
