@@ -390,7 +390,10 @@ class MovieRecommender:
             if excl.lower() in movie_genres_lower:
                 return False
 
-        movie_overview_lower = (overview or '').lower()
+        if isinstance(overview, str):
+            movie_overview_lower = overview.lower()
+        else:
+            movie_overview_lower = ""
         for excl in extracted_features.exclude_keywords:
             if excl.lower() in movie_overview_lower:
                 return False
