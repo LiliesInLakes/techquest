@@ -69,6 +69,10 @@ class FeatureMatrixBuilder:
         # credits CSV also has a 'title' column — drop it to avoid title_x/title_y
         credits_df = credits_df.drop(columns=['title'], errors='ignore')
 
+        # credits CSV keys on 'movie_id', movies on 'id'
+        if 'movie_id' in credits_df.columns:
+            credits_df = credits_df.rename(columns={'movie_id': 'id'})
+
         movies_df = movies_df.merge(credits_df, on='id', how='left')
         
         movies_df['keywords'] = movies_df['keywords'].apply(self._parse_json_list)

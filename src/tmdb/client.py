@@ -1,9 +1,13 @@
 import os
+import sys
 import asyncio
 import aiohttp
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from dotenv import load_dotenv
 import yaml
+
+load_dotenv()
 
 
 @dataclass
@@ -61,19 +65,39 @@ class TMDBClient:
             await self.session.close()
 
     async def _request(self, endpoint: str, params: Dict = None) -> Dict:
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-        
         url = f"{self.base_url}{endpoint}"
         request_params = {"api_key": self.api_key, "language": "en-US"}
         if params:
             request_params.update(params)
         
-        async with self.session.get(url, params=request_params) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                raise Exception(f"TMDB API error {response.status}: {error_text}")
-            return await response.json()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
+        
+        if not self.session or self.session.closed:
+            connector = aiohttp.TCPConnector(ssl=False)
+            self.session = aiohttp.ClientSession(connector=connector, headers=headers)
+        
+        try:
+            async with self.session.get(url, params=request_params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"TMDB API error {response.status}: {error_text}")
+                return await response.json()
+        except Exception as e:
+            import requests
+            from urllib3.util import Retry
+            from requests.adapters import HTTPAdapter
+            def _sync_req():
+                s = requests.Session()
+                retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+                s.mount("https://", HTTPAdapter(max_retries=retries))
+                resp = s.get(url, params=request_params, headers=headers, timeout=12)
+                if resp.status_code != 200:
+                    raise Exception(f"TMDB API error {resp.status_code}: {resp.text}")
+                return resp.json()
+            return await asyncio.to_thread(_sync_req)
 
     async def discover_movies(
         self,
@@ -81,11 +105,17 @@ class TMDBClient:
         region: str = "US",
         language: str = "en",
         min_rating: float = 0.0,
-        min_votes: int = 100,
+        min_votes: int = 10,
         sort_by: str = "popularity.desc",
         page: int = 1,
         with_watch_providers: Optional[List[str]] = None,
-        watch_region: str = "US"
+        watch_region: str = "US",
+        primary_release_year: Optional[int] = None,
+        primary_release_date_gte: Optional[str] = None,
+        primary_release_date_lte: Optional[str] = None,
+        with_runtime_gte: Optional[int] = None,
+        with_runtime_lte: Optional[int] = None,
+        **kwargs
     ) -> List[Movie]:
         genre_ids = await self._get_genre_ids() if genre else None
         genre_id = genre_ids.get(genre.lower()) if genre_ids and genre else None
@@ -102,10 +132,31 @@ class TMDBClient:
         
         if genre_id:
             params["with_genres"] = genre_id
+            
+        if primary_release_year:
+            params["primary_release_year"] = primary_release_year
+        if primary_release_date_gte:
+            params["primary_release_date.gte"] = primary_release_date_gte
+        if primary_release_date_lte:
+            params["primary_release_date.lte"] = primary_release_date_lte
+        if with_runtime_gte is not None:
+            params["with_runtime.gte"] = with_runtime_gte
+        if with_runtime_lte is not None:
+            params["with_runtime.lte"] = with_runtime_lte
+        
+        for k, v in kwargs.items():
+            if v is not None:
+                params[k] = v
         
         if with_watch_providers:
-            params["with_watch_providers"] = "|".join(with_watch_providers)
-            params["watch_region"] = watch_region
+            numeric_pids = [p for p in with_watch_providers if str(p).isdigit()]
+            named_p = [p for p in with_watch_providers if not str(p).isdigit()]
+            resolved_pids = [int(p) for p in numeric_pids]
+            if named_p:
+                resolved_pids.extend(await self._resolve_watch_provider_ids(named_p, watch_region))
+            if resolved_pids:
+                params["with_watch_providers"] = "|".join(str(i) for i in resolved_pids)
+                params["watch_region"] = watch_region
         
         data = await self._request("/discover/movie", params)
         return [self._parse_movie(m) for m in data.get("results", [])]
@@ -185,6 +236,26 @@ class TMDBClient:
         if not hasattr(self, "_genre_cache"):
             self._genre_cache = await self.get_genres()
         return self._genre_cache
+
+    async def _resolve_watch_provider_ids(self, providers: List[str], watch_region: str = "US") -> List[int]:
+        try:
+            data = await self._request("/watch/providers/movie", {"watch_region": watch_region})
+            provider_list = data.get("results", [])
+            mapping = {p["provider_name"].lower(): p["provider_id"] for p in provider_list}
+            ids = []
+            for name in providers:
+                n = name.strip().lower()
+                if n in mapping:
+                    ids.append(mapping[n])
+                else:
+                    for pname, pid in mapping.items():
+                        if n in pname or pname in n:
+                            ids.append(pid)
+                            break
+            return ids
+        except Exception as e:
+            print(f"Warning: could not resolve provider IDs: {e}", file=sys.stderr)
+            return []
 
     def _parse_movie(self, data: Dict) -> Movie:
         genre_names = []
