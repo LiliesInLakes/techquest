@@ -75,6 +75,28 @@ class TMDBClient:
                 raise Exception(f"TMDB API error {response.status}: {error_text}")
             return await response.json()
 
+    async def search_person(self, name: str) -> Optional[int]:
+        """Search for an actor or director by name and return their TMDB Person ID."""
+        try:
+            data = await self._request("/search/person", {"query": name})
+            results = data.get("results", [])
+            if results:
+                return results[0].get("id")
+        except Exception:
+            pass
+        return None
+
+    async def search_keyword(self, keyword: str) -> Optional[int]:
+        """Search for a keyword and return its TMDB Keyword ID."""
+        try:
+            data = await self._request("/search/keyword", {"query": keyword})
+            results = data.get("results", [])
+            if results:
+                return results[0].get("id")
+        except Exception:
+            pass
+        return None
+
     async def discover_movies(
         self,
         genre: Optional[str] = None,
@@ -85,7 +107,17 @@ class TMDBClient:
         sort_by: str = "popularity.desc",
         page: int = 1,
         with_watch_providers: Optional[List[str]] = None,
-        watch_region: str = "US"
+        watch_region: str = "US",
+        with_genres: Optional[str] = None,
+        without_genres: Optional[str] = None,
+        with_cast: Optional[str] = None,
+        with_crew: Optional[str] = None,
+        primary_release_date_gte: Optional[str] = None,
+        primary_release_date_lte: Optional[str] = None,
+        with_runtime_gte: Optional[int] = None,
+        with_runtime_lte: Optional[int] = None,
+        with_keywords: Optional[str] = None,
+        **kwargs
     ) -> List[Movie]:
         genre_ids = await self._get_genre_ids() if genre else None
         genre_id = genre_ids.get(genre.lower()) if genre_ids and genre else None
@@ -100,8 +132,34 @@ class TMDBClient:
             "watch_region": watch_region
         }
         
-        if genre_id:
+        if with_genres:
+            params["with_genres"] = with_genres
+        elif genre_id:
             params["with_genres"] = genre_id
+
+        if without_genres:
+            params["without_genres"] = without_genres
+        
+        if with_cast:
+            params["with_cast"] = with_cast
+
+        if with_crew:
+            params["with_crew"] = with_crew
+
+        if primary_release_date_gte:
+            params["primary_release_date.gte"] = primary_release_date_gte
+
+        if primary_release_date_lte:
+            params["primary_release_date.lte"] = primary_release_date_lte
+
+        if with_runtime_gte:
+            params["with_runtime.gte"] = with_runtime_gte
+
+        if with_runtime_lte:
+            params["with_runtime.lte"] = with_runtime_lte
+
+        if with_keywords:
+            params["with_keywords"] = with_keywords
         
         if with_watch_providers:
             params["with_watch_providers"] = "|".join(with_watch_providers)
