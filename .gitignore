@@ -1,0 +1,31 @@
+# Environments and Secrets
+.env
+.env.local
+*.env
+
+# Python Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / Packaging
+build/
+dist/
+*.egg-info/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Local databases
+*.db
+data/*.db
+data/memory.db
+

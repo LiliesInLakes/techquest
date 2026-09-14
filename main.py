@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def run_ui(port: int = 8080, host: str = "127.0.0.1"):
+    import uvicorn
+    from src.ui.web_app import app
+    print(f"\n=======================================================")
+    print(f"  Movie Recommender UI started at http://{host}:{port}")
+    print(f"=======================================================\n")
+    uvicorn.run(app, host=host, port=port)
+
+
 def run_mcp_server():
     import uvicorn
     from mcp_server import app
@@ -36,26 +45,16 @@ async def run_recommendation_cli(
 
     recommender = MovieRecommender()
 
-    if watch_history:
-        result = await recommender.get_recommendations(
-            user_id=user_id,
-            watch_history=watch_history,
-            subscriptions=subscriptions or [],
-            region=region,
-            language=language,
-            top_k=top_k,
-            natural_language=natural_language
-        )
-        print(json.dumps(result, indent=2))
-    else:
-        movies = await recommender.search_movies(
-            genre=genre,
-            region=region,
-            language=language,
-            subscriptions=subscriptions or [],
-            max_results=top_k
-        )
-        print(json.dumps({"movies": movies}, indent=2))
+    result = await recommender.get_recommendations(
+        user_id=user_id,
+        watch_history=watch_history or [],
+        subscriptions=subscriptions or [],
+        region=region,
+        language=language,
+        top_k=top_k,
+        natural_language=natural_language
+    )
+    print(json.dumps(result, indent=2))
 
 
 def run_precompute():
@@ -66,9 +65,44 @@ def run_precompute():
     print("Feature matrix built and saved successfully")
 
 
+def run_profile_inspect(user_id: str):
+    from src.memory.service import UserMemoryService
+    service = UserMemoryService()
+    profile = service.get_user_profile(user_id)
+    print(service._serialize_profile(profile))
+
+
+def run_log_event(user_id: str, movie_id: int, event_type: str):
+    from src.memory.service import UserMemoryService
+    service = UserMemoryService()
+    ev = service.record_interaction(user_id=user_id, movie_id=movie_id, event_type=event_type)
+    print(json.dumps({
+        "status": "success",
+        "event_id": ev.id,
+        "event_type": ev.event_type.value,
+        "signal_weight": ev.signal_weight
+    }, indent=2))
+
+
+def run_rate(user_id: str, movie_id: int, rating: float, review_text: str = None):
+    from src.memory.service import UserMemoryService
+    service = UserMemoryService()
+    r = service.record_rating(user_id=user_id, movie_id=movie_id, rating=rating, review_text=review_text)
+    print(json.dumps({
+        "status": "success",
+        "rating_id": r.id,
+        "rating": r.rating,
+        "signal_target": r.signal_target
+    }, indent=2))
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Movie Recommender Agent")
+    parser = argparse.ArgumentParser(description="Movie Recommender Agent with Memory System")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    ui_parser = subparsers.add_parser("ui", help="Launch interactive web UI")
+    ui_parser.add_argument("--port", type=int, default=8080, help="Port to run web UI on")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Host address")
 
     subparsers.add_parser("mcp", help="Run MCP server")
     subparsers.add_parser("a2a", help="Run A2A agent")
@@ -84,14 +118,37 @@ def main():
     cli_parser.add_argument("--top-k", type=int, default=10, help="Number of recommendations")
     cli_parser.add_argument("--natural-language", type=str, help="Natural language query (e.g., 'funny 90s space comedy')")
 
+    prof_parser = subparsers.add_parser("profile", help="View user profile memory")
+    prof_parser.add_argument("--user-id", required=True, help="User ID")
+    prof_parser.add_argument("--json", action="store_true", help="Output raw JSON format")
+
+    event_parser = subparsers.add_parser("log-event", help="Log an observable watch event")
+    event_parser.add_argument("--user-id", required=True, help="User ID")
+    event_parser.add_argument("--movie-id", type=int, required=True, help="TMDB Movie ID")
+    event_parser.add_argument("--event", required=True, choices=["movie_clicked", "movie_viewed", "added_to_watchlist", "marked_watched"], help="Event type")
+
+    rate_parser = subparsers.add_parser("rate", help="Rate a movie (0-5 stars)")
+    rate_parser.add_argument("--user-id", required=True, help="User ID")
+    rate_parser.add_argument("--movie-id", type=int, required=True, help="TMDB Movie ID")
+    rate_parser.add_argument("--rating", type=float, required=True, help="Rating from 0.0 to 5.0")
+    rate_parser.add_argument("--review", type=str, help="Optional review text")
+
     args = parser.parse_args()
 
-    if args.command == "mcp":
+    if args.command == "ui":
+        run_ui(port=args.port, host=args.host)
+    elif args.command == "mcp":
         run_mcp_server()
     elif args.command == "a2a":
         run_a2a_agent()
     elif args.command == "precompute":
         run_precompute()
+    elif args.command == "profile":
+        run_profile_inspect(args.user_id, as_json=getattr(args, "json", False))
+    elif args.command == "log-event":
+        run_log_event(args.user_id, args.movie_id, args.event)
+    elif args.command == "rate":
+        run_rate(args.user_id, args.movie_id, args.rating, args.review)
     elif args.command == "recommend":
         watch_history = None
         if args.watch_history:

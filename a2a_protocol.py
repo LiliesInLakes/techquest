@@ -1,9 +1,10 @@
 import json
 import uuid
+import asyncio
 from typing import Any, Dict, List, Optional, Callable, Awaitable
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 from abc import ABC, abstractmethod
 
 
@@ -29,7 +30,7 @@ class A2AMessage:
     message_type: A2AMessageType = A2AMessageType.TASK_REQUEST
     sender_id: str = ""
     recipient_id: str = ""
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     payload: Dict[str, Any] = field(default_factory=dict)
     correlation_id: Optional[str] = None
 
@@ -275,6 +276,7 @@ class MovieRecommenderA2AAgent(A2AAgent):
         from src.pipeline.recommender import MovieRecommender
         
         recommender = MovieRecommender()
+        await recommender.initialize()
         profile = recommender.analyze_user_preferences(
             watch_history=params.get("watch_history", []),
             ratings=params.get("ratings", {})
@@ -283,8 +285,9 @@ class MovieRecommenderA2AAgent(A2AAgent):
 
 
 class A2AClient:
-    def __init__(self, agent_id: str):
+    def __init__(self, agent_id: str, target_agent: Optional[A2AAgent] = None):
         self.agent_id = agent_id
+        self.target_agent = target_agent
         self._pending_requests: Dict[str, asyncio.Future] = {}
 
     async def send_request(
@@ -294,32 +297,59 @@ class A2AClient:
         params: Dict[str, Any],
         timeout: float = 30.0
     ) -> Dict[str, Any]:
+        req_id = str(uuid.uuid4())
         message = A2AMessage(
+            message_id=req_id,
             message_type=A2AMessageType.TASK_REQUEST,
             sender_id=self.agent_id,
             recipient_id=recipient_id,
+            correlation_id=req_id,
             payload={"task": task, "params": params}
         )
         
-        future = asyncio.Future()
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
         self._pending_requests[message.correlation_id] = future
         
         try:
+            if self.target_agent:
+                response = await self.target_agent.handle_message(message)
+                self.handle_response(response)
+
             response = await asyncio.wait_for(future, timeout=timeout)
+            if response.message_type == A2AMessageType.ERROR:
+                raise RuntimeError(response.payload.get("error", "Unknown A2A error"))
             return response.payload.get("result", {})
         finally:
             self._pending_requests.pop(message.correlation_id, None)
 
-    async def discover_agent(self, recipient_id: str) -> AgentInfo:
+    async def discover_agent(self, recipient_id: str, timeout: float = 10.0) -> Optional[AgentInfo]:
+        req_id = str(uuid.uuid4())
         message = A2AMessage(
+            message_id=req_id,
             message_type=A2AMessageType.AGENT_DISCOVERY,
             sender_id=self.agent_id,
-            recipient_id=recipient_id
+            recipient_id=recipient_id,
+            correlation_id=req_id
         )
-        return None
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._pending_requests[message.correlation_id] = future
+
+        try:
+            if self.target_agent:
+                response = await self.target_agent.handle_message(message)
+                self.handle_response(response)
+
+            response = await asyncio.wait_for(future, timeout=timeout)
+            info_dict = response.payload.get("agent_info", {})
+            return AgentInfo(**info_dict) if info_dict else None
+        finally:
+            self._pending_requests.pop(message.correlation_id, None)
 
     def handle_response(self, message: A2AMessage):
-        future = self._pending_requests.get(message.correlation_id)
+        corr_id = message.correlation_id or message.message_id
+        future = self._pending_requests.get(corr_id)
         if future and not future.done():
             future.set_result(message)
 

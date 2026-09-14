@@ -5,6 +5,9 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from openai import AsyncOpenAI
 import yaml
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
@@ -20,12 +23,19 @@ class DeepSeekReasoner:
         self.config = self._load_config(config_path)
         deepseek_config = self.config.get("deepseek", {})
         
-        self.api_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
-        if not self.api_key or self.api_key == "${DEEPSEEK_API_KEY}":
-            raise ValueError("DEEPSEEK_API_KEY not configured")
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
         
-        self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
-        self.model = deepseek_config.get("model", "deepseek-chat")
+        if deepseek_key and deepseek_key != "${DEEPSEEK_API_KEY}" and "your_deepseek_api_key" not in deepseek_key:
+            self.api_key = deepseek_key
+            self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
+            self.model = deepseek_config.get("model", "deepseek-chat")
+        elif openrouter_key and openrouter_key != "${OPENROUTER_API_KEY}" and "your_openrouter_api_key" not in openrouter_key:
+            self.api_key = openrouter_key
+            self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            self.model = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
+        else:
+            raise ValueError("Neither DEEPSEEK_API_KEY nor OPENROUTER_API_KEY is configured")
         
         self.client = AsyncOpenAI(
             api_key=self.api_key,

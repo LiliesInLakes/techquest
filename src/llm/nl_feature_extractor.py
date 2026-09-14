@@ -6,6 +6,9 @@ from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 import yaml
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
@@ -51,18 +54,25 @@ class NLFeatureExtractor:
         self.config = self._load_config(config_path)
         deepseek_config = self.config.get("deepseek", {})
 
-        self.api_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
-        # Don't raise: without a key the extractor degrades to regex fallback
-        # so the pipeline still runs end-to-end (lower extraction quality).
-        self._llm_available = bool(
-            self.api_key and self.api_key != "${DEEPSEEK_API_KEY}"
-            and "your_deepseek_api_key" not in self.api_key
-        )
-        if not self._llm_available:
-            print("DeepSeek not configured, NL extraction uses regex fallback", file=sys.stderr)
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
 
-        self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
-        self.model = deepseek_config.get("model", "deepseek-chat")
+        if deepseek_key and deepseek_key != "${DEEPSEEK_API_KEY}" and "your_deepseek_api_key" not in deepseek_key:
+            self.api_key = deepseek_key
+            self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
+            self.model = deepseek_config.get("model", "deepseek-chat")
+            self._llm_available = True
+        elif openrouter_key and openrouter_key != "${OPENROUTER_API_KEY}" and "your_openrouter_api_key" not in openrouter_key:
+            self.api_key = openrouter_key
+            self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            self.model = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
+            self._llm_available = True
+        else:
+            self.api_key = None
+            self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
+            self.model = deepseek_config.get("model", "deepseek-chat")
+            self._llm_available = False
+            print("Neither DeepSeek nor OpenRouter configured, NL extraction uses regex fallback", file=sys.stderr)
 
         self.client = AsyncOpenAI(
             api_key=self.api_key or "no-key",
@@ -290,11 +300,7 @@ RULES:
         region: str = "US",
         language: str = "en"
     ) -> Dict[str, Any]:
-        # Return kwargs matching TMDBClient.discover_movies() signature.
-        # discover_movies() takes a single genre name; use the first extracted genre.
-        # Loose sorting only: popularity.desc, no strict filtering here.
-        # Exclusions are applied in Python after fetch.
-        return {
+        params = {
             "genre": features.genres[0] if features.genres else None,
             "region": region,
             "language": language,
@@ -304,6 +310,42 @@ RULES:
             "with_watch_providers": subscriptions or None,
             "watch_region": region,
         }
+
+        text = (features.original_text or "").lower()
+        import re
+
+        # Parse year / decade / date constraints
+        year_match = re.search(r'\b(19\d\d|20\d\d)\b', text)
+        if "after 2024" in text or "since 2024" in text or "2024 or later" in text or "from 2024" in text or "post 2024" in text or "2024+" in text:
+            params["primary_release_date_gte"] = "2024-01-01"
+        elif "after 2023" in text or "since 2023" in text or "2023+" in text:
+            params["primary_release_date_gte"] = "2023-01-01"
+        elif year_match:
+            year = int(year_match.group(1))
+            if "after" in text or "since" in text or "post" in text:
+                params["primary_release_date_gte"] = f"{year}-01-01"
+            elif "before" in text or "prior" in text:
+                params["primary_release_date_lte"] = f"{year}-12-31"
+            elif "in " + str(year) in text or str(year) in text:
+                params["primary_release_year"] = year
+        elif features.decades:
+            dec = features.decades[0]
+            if dec.endswith('s') and dec[:-1].isdigit():
+                start_yr = int(dec[:-1])
+                params["primary_release_date_gte"] = f"{start_yr}-01-01"
+                params["primary_release_date_lte"] = f"{start_yr + 9}-12-31"
+
+        # Parse runtime constraints (e.g., 2 hours, 2hrs, 90 mins, 1.5 hours)
+        if re.search(r'\b(2\s*(?:hours|hrs|hr|h)|120\s*min(?:ute)?s?)\b', text):
+            params["with_runtime_gte"] = 95
+            params["with_runtime_lte"] = 145
+        elif re.search(r'\b(1\.5\s*(?:hours|hrs|hr)|90\s*min(?:ute)?s?)\b', text):
+            params["with_runtime_gte"] = 75
+            params["with_runtime_lte"] = 110
+        elif re.search(r'\b(3\s*(?:hours|hrs|hr)|180\s*min(?:ute)?s?)\b', text):
+            params["with_runtime_gte"] = 150
+
+        return params
 
     def map_to_vocabulary(self, features: ExtractedFeatures, vocab: Set[str]) -> ExtractedFeatures:
         if not self.semantic_search:
