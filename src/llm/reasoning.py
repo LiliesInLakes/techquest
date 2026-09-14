@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 from typing import List, Dict, Any, Optional
@@ -202,6 +203,54 @@ Write a natural, conversational recommendation reason (2-4 sentences) explaining
             user_preferences_matched=matched
         )
 
+    async def generate_top_pick_verdict(
+        self,
+        top_movie: Dict[str, Any],
+        user_profile,
+        ranking_factors: Dict[str, float],
+        user_query: str = "",
+        watch_history_summary: str = ""
+    ) -> str:
+        title = top_movie.get('title', 'Unknown')
+        genres = ', '.join([g if isinstance(g, str) else g.get('name', '') for g in top_movie.get('genres', [])])
+        prompt = f"""You are a movie recommendation expert. Write a decisive, compelling 2-3 sentence verdict explaining specifically why "{title}" is the definitive film for the user to watch tonight.
+
+Target Film: {title}
+Genres: {genres}
+Rating: {top_movie.get('vote_average', 0)}/10
+Overview: {top_movie.get('overview', '')[:300]}
+User Search Query: {user_query if user_query else 'Personalized taste match'}
+Watch History Summary: {watch_history_summary}
+
+STRICT CONSTRAINTS:
+1. You must ONLY discuss and evaluate "{title}". Do NOT substitute, mention, or recommend any other movie.
+2. Do NOT output metadata headers like "**#1 Top Pick:**", "Genres:", "Rating:", or "Runtime:".
+3. Write directly in engaging, conversational prose explaining why "{title}" fulfills their taste profile and search intent tonight."""
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"You are a movie curation expert. You write decisive verdicts solely for the specified film ({title}) without mentioning any other movie or outputting boilerplate template headers."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=250
+            )
+            verdict = response.choices[0].message.content.strip()
+            # Clean up any lingering markdown boilerplate headers
+            verdict = re.sub(r'^\*{0,2}#?1?\s*Top Pick:?.*?\*{0,2}\s*', '', verdict, flags=re.IGNORECASE)
+            verdict = re.sub(r'^\*{0,2}Final Verdict:?\*{0,2}\s*', '', verdict, flags=re.IGNORECASE)
+            verdict = re.sub(r'^\*{0,2}Why this is your ultimate watch:?\*{0,2}\s*', '', verdict, flags=re.IGNORECASE)
+            return verdict.strip()
+        except Exception:
+            return self._fallback_top_pick(top_movie, user_profile)
+
+    def _fallback_top_pick(self, top_movie: Dict[str, Any], user_profile) -> str:
+        title = top_movie.get('title', 'This movie')
+        rating = top_movie.get('vote_average', 0)
+        genres = ', '.join(top_movie.get('genres', []))
+        return f"If you're picking just one movie tonight, make it {title} ({rating}/10) — it stands out as your definitive top match across {genres} and your viewing preferences."
+
     async def generate_batch_reasoning(
         self,
         movies: List[Dict[str, Any]],
@@ -253,6 +302,12 @@ class ReasoningTemplateEngine:
             )
         
         return f"{title} ({rating}/10) is a {', '.join(genres)} film that matches your viewing preferences."
+
+    def generate_top_pick(self, top_movie: Dict, profile, factors: Dict = None, user_query: str = "") -> str:
+        title = top_movie.get('title', 'This movie')
+        rating = top_movie.get('vote_average', 0)
+        genres = ', '.join(top_movie.get('genres', []))
+        return f"If you're picking just one movie tonight, make it {title} ({rating}/10) — it is your definitive #1 recommendation based on your taste profile in {genres}."
 
 
 async def main():

@@ -21,6 +21,10 @@ class UserPreferenceProfile:
     feature_vector: np.ndarray
     keyword_weights: Dict[str, float]
     genre_weights: Dict[str, float]
+    top_tags: List[Tuple[str, float]] = field(default_factory=list)
+    top_themes: List[Tuple[str, float]] = field(default_factory=list)
+    top_tones: List[Tuple[str, float]] = field(default_factory=list)
+    negative_preferences: Dict[str, float] = field(default_factory=dict)
 
 
 class PreferenceExtractor:

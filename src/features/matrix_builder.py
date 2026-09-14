@@ -53,7 +53,10 @@ class FeatureMatrixBuilder:
             max_df=0.95
         )
         
-        self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.semantic_model_name = self.config.get("recommendation", {}).get(
+            "semantic_model_name", "multi-qa-mpnet-base-dot-v1"
+        )
+        self.semantic_model = SentenceTransformer(self.semantic_model_name)
 
     def _load_config(self, config_path: str) -> Dict:
         try:

@@ -10,12 +10,13 @@ deepseek:
 
 recommendation:
   top_k_movies: 100
-  final_recommendations: 10
+  final_recommendations: 1
   imdb_weight: 0.3
   tfidf_weight: 0.2
   watch_history_weight: 0.5
   semantic_similarity_threshold: 0.7
   semantic_weight: 0.3
+  semantic_model_name: "multi-qa-mpnet-base-dot-v1"
   stage1_candidates: 100
   stage1_max_tmdb_results: 200
   history_boost_factor: 0.3
