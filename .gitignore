@@ -42,11 +42,13 @@ Thumbs.db
 *.swp
 *.swo
 
-# Local/generated files
+# Local/generated files & datasets
 hist.json
 data/analytics/
 data/processed/
+data/ml-32m/
 
+<<<<<<< Updated upstream
 # Local databases
 *.db
 data/*.db
@@ -65,3 +67,14 @@ TO_PUSH.md
 TO_PUSH_AUDIT.md
 build_progress.json
 run_stderr.log
+=======
+# Generated database & build artifacts
+movie_features.db
+build_progress.json
+TO_PUSH.md
+TO_PUSH_AUDIT.md
+run_stderr.log
+
+# VS Code settings
+.vscode/
+>>>>>>> Stashed changes
