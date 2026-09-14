@@ -161,6 +161,36 @@ class TMDBClient:
         data = await self._request("/discover/movie", params)
         return [self._parse_movie(m) for m in data.get("results", [])]
 
+    async def _resolve_watch_provider_ids(
+        self, providers: List[str], watch_region: str = "US"
+    ) -> List[int]:
+        # TMDB with_watch_providers only accepts numeric provider IDs, but callers
+        # pass names like "netflix". Resolve via /watch/providers/movie.
+        if not providers:
+            return []
+
+        numeric = [p for p in providers if str(p).isdigit()]
+        names = [p for p in providers if not str(p).isdigit()]
+
+        resolved = set(numeric)
+        if names:
+            try:
+                data = await self._request(
+                    "/watch/providers/movie", {"watch_region": watch_region}
+                )
+                name_to_id = {
+                    p.get("provider_name", "").lower(): p.get("provider_id")
+                    for p in data.get("results", [])
+                }
+                for name in names:
+                    pid = name_to_id.get(str(name).lower())
+                    if pid:
+                        resolved.add(pid)
+            except Exception as e:
+                print(f"Watch provider resolution failed ({e}); ignoring provider filter", file=sys.stderr)
+
+        return sorted(resolved)
+
     async def search_movies(
         self,
         query: str,
