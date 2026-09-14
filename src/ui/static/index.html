@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Movie Recommender Agent & Memory Subsystem</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f5f3ff',
+              100: '#ede9fe',
+              500: '#8b5cf6',
+              600: '#7c3aed',
+              700: '#6d28d9',
+              900: '#4c1d95',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    .glass {
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-brand-500 selection:text-white">
+
+  <!-- TOP NAVIGATION BAR -->
+  <header class="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-brand-500/25">
+          <i class="fa-solid fa-film text-white text-lg"></i>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            Movie Agent <span class="text-xs px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-400 border border-brand-500/30">Adaptive Memory v1</span>
+          </h1>
+          <p class="text-xs text-slate-400">Two-Stage Ranking & Real-time Taste Tracking</p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-4">
+        <!-- USER SELECTOR -->
+        <div class="flex items-center space-x-2 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800">
+          <i class="fa-solid fa-user-circle text-slate-400"></i>
+          <span class="text-xs text-slate-400 font-medium">User:</span>
+          <input type="text" id="userIdInput" value="demo" class="bg-transparent text-xs font-semibold text-brand-400 w-16 focus:outline-none border-b border-transparent focus:border-brand-500" onchange="loadUserProfile(); loadUserHistory();">
+        </div>
+
+        <!-- MEMORY BALANCE BADGE -->
+        <div id="memoryBadge" class="hidden sm:flex items-center space-x-2 bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 text-xs">
+          <span class="text-slate-400">Memory Balance:</span>
+          <span id="memoryBalanceText" class="font-semibold text-emerald-400">70% Short / 30% Long</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN CONTAINER -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 w-full">
+
+    <!-- LEFT COLUMN: DISCOVERY & RECOMMENDATIONS (8 COLS) -->
+    <div class="lg:col-span-8 space-y-6">
+
+      <!-- NATURAL LANGUAGE SEARCH BAR -->
+      <div class="glass p-6 rounded-2xl shadow-xl shadow-black/40 relative overflow-hidden">
+        <div class="absolute -top-16 -right-16 w-48 h-48 bg-brand-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+        <label class="block text-sm font-semibold text-slate-200 mb-2">
+          <i class="fa-solid fa-wand-magic-sparkles text-brand-400 mr-1.5"></i> What would you like to watch?
+        </label>
+        
+        <div class="relative">
+          <input type="text" id="nlQueryInput" 
+            placeholder="e.g. i want to watch some horror movie of about 2hrs released after 2024..." 
+            class="w-full bg-slate-900/90 text-white placeholder-slate-500 text-sm rounded-xl pl-4 pr-28 py-3.5 border border-slate-700/80 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 shadow-inner"
+            onkeydown="if(event.key === 'Enter') executeSearch();">
+          
+          <button id="searchBtn" onclick="executeSearch()" 
+            class="absolute right-2 top-2 bottom-2 px-5 bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white text-xs font-semibold rounded-lg shadow-md transition-all flex items-center gap-1.5 active:scale-95">
+            <span>Discover</span>
+            <i class="fa-solid fa-arrow-right text-xs"></i>
+          </button>
+        </div>
+
+        <!-- QUICK PROMPT PRESETS -->
+        <div class="mt-3.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+          <span class="text-slate-500 font-medium mr-1"><i class="fa-regular fa-lightbulb"></i> Try:</span>
+          <button onclick="setQuery('feel-good comforting movie to cheer up and lift mood')" class="px-2.5 py-1 rounded-md bg-slate-900/80 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors">✨ Feel-good Comfort</button>
+          <button onclick="setQuery('horror movie of about 2hrs and released after 2024')" class="px-2.5 py-1 rounded-md bg-slate-900/80 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors">👻 2024+ Horror (~2h)</button>
+          <button onclick="setQuery('mind-bending sci-fi with time travel, highly rated')" class="px-2.5 py-1 rounded-md bg-slate-900/80 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors">🚀 Mind-bending Sci-Fi</button>
+          <button onclick="setQuery('intense gritty action thriller')" class="px-2.5 py-1 rounded-md bg-slate-900/80 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors">💥 Gritty Action</button>
+        </div>
+      </div>
+
+      <!-- RECOMMENDATIONS HEADER & STATUS -->
+      <div class="flex items-center justify-between pt-2">
+        <div>
+          <h2 class="text-lg font-bold text-white flex items-center gap-2">
+            <span>Top Recommendations</span>
+            <span id="resultsCountBadge" class="hidden text-xs font-normal px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">0 found</span>
+          </h2>
+          <p id="querySummaryText" class="text-xs text-slate-400 mt-0.5">Ranked by Personal Taste & Content Quality</p>
+        </div>
+        
+        <div class="flex items-center space-x-2">
+          <select id="topKSelect" class="bg-slate-900 text-slate-300 text-xs rounded-lg px-2.5 py-1.5 border border-slate-800 focus:outline-none focus:border-brand-500" onchange="executeSearch()">
+            <option value="4">Top 4</option>
+            <option value="6" selected>Top 6</option>
+            <option value="10">Top 10</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- LOADING SPINNER -->
+      <div id="loadingState" class="hidden py-16 flex flex-col items-center justify-center text-center space-y-3">
+        <div class="w-12 h-12 rounded-full border-4 border-slate-800 border-t-brand-500 animate-spin"></div>
+        <p class="text-sm font-medium text-slate-300">Consulting AI reasoner & running two-stage ranker...</p>
+        <p class="text-xs text-slate-500">Querying TMDB live discover & scoring against your memory profile</p>
+      </div>
+
+      <!-- MOVIES GRID -->
+      <div id="moviesGrid" class="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <!-- Cards will be populated dynamically -->
+      </div>
+
+      <!-- EMPTY STATE -->
+      <div id="emptyState" class="py-16 text-center border-2 border-dashed border-slate-800/80 rounded-2xl p-8 glass">
+        <div class="w-14 h-14 mx-auto rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500 text-xl mb-3">
+          <i class="fa-solid fa-clapperboard"></i>
+        </div>
+        <h3 class="text-base font-semibold text-slate-200">No movies loaded yet</h3>
+        <p class="text-xs text-slate-400 mt-1 max-w-sm mx-auto">Type what you feel like watching above or pick one of the sample prompt buttons to generate recommendations.</p>
+      </div>
+
+    </div>
+
+    <!-- RIGHT COLUMN: USER PROFILE & HISTORY TABS (4 COLS) -->
+    <div class="lg:col-span-4 space-y-6">
+
+      <!-- TABS NAVIGATION -->
+      <div class="glass p-1 rounded-xl flex space-x-1">
+        <button id="tabProfileBtn" onclick="switchSidebarTab('profile')" class="flex-1 py-2 text-xs font-semibold rounded-lg bg-brand-600 text-white shadow-sm transition-all flex items-center justify-center gap-1.5">
+          <i class="fa-solid fa-brain text-xs"></i>
+          <span>Taste Profile</span>
+        </button>
+        <button id="tabHistoryBtn" onclick="switchSidebarTab('history')" class="flex-1 py-2 text-xs font-semibold rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-900/50 transition-all flex items-center justify-center gap-1.5">
+          <i class="fa-solid fa-clock-rotate-left text-xs"></i>
+          <span>Watch History</span>
+        </button>
+      </div>
+
+      <!-- TAB 1: USER TASTE PROFILE PANEL -->
+      <div id="profileTab" class="glass p-5 rounded-2xl space-y-5">
+        
+        <!-- MEMORY BALANCE CARD -->
+        <div>
+          <div class="flex items-center justify-between text-xs mb-1.5">
+            <span class="font-semibold text-slate-300">Memory Balance ($\beta$)</span>
+            <span id="balanceRatio" class="text-brand-400 font-bold">70% Short / 30% Long</span>
+          </div>
+          <div class="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden flex border border-slate-800">
+            <div id="shortTermBar" class="bg-indigo-500 h-full transition-all duration-500" style="width: 70%"></div>
+            <div id="longTermBar" class="bg-brand-500 h-full transition-all duration-500" style="width: 30%"></div>
+          </div>
+          <p class="text-[11px] text-slate-400 mt-1.5 flex justify-between">
+            <span><span class="inline-block w-2 h-2 rounded-full bg-indigo-500 mr-1"></span>Short-term (7d Decay)</span>
+            <span><span class="inline-block w-2 h-2 rounded-full bg-brand-500 mr-1"></span>Long-term (Permanent)</span>
+          </p>
+        </div>
+
+        <!-- AGENT LEARNING CURVE CARD -->
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-2.5 shadow-inner">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+              <i class="fa-solid fa-chart-line text-brand-400"></i>
+              <span>Agent Learning Curve</span>
+            </h4>
+            <span id="learningStageBadge" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-300 border border-brand-500/30">
+              🌱 Initial Discovery
+            </span>
+          </div>
+
+          <!-- SVG GRAPH -->
+          <div class="relative bg-slate-950 rounded-lg p-2 border border-slate-800/80 overflow-hidden">
+            <svg id="learningCurveSvg" viewBox="0 0 260 75" class="w-full h-20 overflow-visible">
+              <!-- Grid lines -->
+              <line x1="20" y1="10" x2="250" y2="10" stroke="#1e293b" stroke-dasharray="2,2" />
+              <line x1="20" y1="40" x2="250" y2="40" stroke="#1e293b" stroke-dasharray="2,2" />
+              <line x1="20" y1="65" x2="250" y2="65" stroke="#334155" />
+              
+              <!-- Beta curve (Exploration ratio dropping from 100% to 40% steady state) -->
+              <path d="M 20 12 C 70 12, 110 44, 160 44 L 250 44" fill="none" stroke="#6366f1" stroke-width="2.5" stroke-linecap="round" />
+              <!-- Confidence curve (Confidence rising asymptotically to 100%) -->
+              <path d="M 20 63 C 70 58, 120 28, 250 14" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-dasharray="3,2" />
+
+              <!-- User Current Position Marker -->
+              <g id="curveUserMarker" transform="translate(20, 12)">
+                <circle r="7" fill="#ec4899" class="animate-ping opacity-60" />
+                <circle r="4" fill="#f43f5e" stroke="#ffffff" stroke-width="1.5" />
+              </g>
+
+              <!-- Axis labels -->
+              <text x="20" y="73" fill="#64748b" font-size="7">N=0</text>
+              <text x="135" y="73" fill="#64748b" font-size="7">N=5</text>
+              <text x="235" y="73" fill="#64748b" font-size="7">N=10+</text>
+            </svg>
+            <div class="flex justify-between text-[9px] text-slate-400 mt-1 px-1">
+              <span><span class="inline-block w-2 h-0.5 bg-indigo-500 mr-1 align-middle"></span>Exploration $\beta$</span>
+              <span><span class="inline-block w-2 h-0.5 bg-emerald-500 mr-1 align-middle"></span>Confidence ($\frac{N}{N+10}$)</span>
+            </div>
+          </div>
+
+          <!-- LEARNING STATS METRICS -->
+          <div class="grid grid-cols-3 gap-1.5 text-center text-[10px]">
+            <div class="bg-slate-950/90 p-1.5 rounded-lg border border-slate-800">
+              <div class="text-slate-400 text-[9px]">Interactions</div>
+              <div id="statInteractions" class="text-xs font-bold text-white mt-0.5">0</div>
+            </div>
+            <div class="bg-slate-950/90 p-1.5 rounded-lg border border-slate-800">
+              <div class="text-slate-400 text-[9px]">Confidence</div>
+              <div id="statConfidence" class="text-xs font-bold text-emerald-400 mt-0.5">0%</div>
+            </div>
+            <div class="bg-slate-950/90 p-1.5 rounded-lg border border-slate-800">
+              <div class="text-slate-400 text-[9px]">Status</div>
+              <div id="statStability" class="text-xs font-bold text-indigo-400 mt-0.5">Exploration</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ACTIVE STREAMING SUBSCRIPTIONS -->
+        <div>
+          <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center justify-between">
+            <span>My Subscriptions</span>
+            <i class="fa-solid fa-tv text-slate-500"></i>
+          </h4>
+          <p class="text-[11px] text-slate-400 mb-2">Select your streaming services to prioritize available titles:</p>
+          <div id="subscriptionsList" class="flex flex-wrap gap-1.5">
+            <!-- Populated dynamically with toggleable subscription chips -->
+          </div>
+        </div>
+
+        <div class="border-t border-slate-800/80"></div>
+
+        <!-- TOP GENRES LIST -->
+        <div>
+          <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2.5 flex items-center justify-between">
+            <span>Top Long-Term Genres</span>
+            <i class="fa-solid fa-masks-theater text-slate-500"></i>
+          </h4>
+          <div id="topGenresList" class="space-y-2">
+            <div class="text-xs text-slate-500 italic">No ratings yet</div>
+          </div>
+        </div>
+
+        <div class="border-t border-slate-800/80"></div>
+
+        <!-- TOP KEYWORDS LIST -->
+        <div>
+          <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2.5 flex items-center justify-between">
+            <span>Top Affinities & Tropes</span>
+            <i class="fa-solid fa-tags text-slate-500"></i>
+          </h4>
+          <div id="topKeywordsList" class="flex flex-wrap gap-1.5">
+            <div class="text-xs text-slate-500 italic">No keywords yet</div>
+          </div>
+        </div>
+
+        <div class="border-t border-slate-800/80"></div>
+
+        <!-- NEGATIVE PREFERENCES -->
+        <div>
+          <h4 class="text-xs font-bold text-rose-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+            <span>Negative Penalties (Dislikes)</span>
+            <i class="fa-solid fa-thumbs-down text-rose-500/60"></i>
+          </h4>
+          <div id="negativePrefsList" class="space-y-1.5 text-xs text-slate-400">
+            <div class="text-xs text-slate-500 italic">No negative penalties</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- TAB 2: WATCH HISTORY & LEDGER PANEL -->
+      <div id="historyTab" class="hidden glass p-5 rounded-2xl space-y-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Recent Interactions & Ratings</h3>
+          <button onclick="loadUserHistory()" class="text-xs text-brand-400 hover:underline"><i class="fa-solid fa-rotate mr-1"></i>Refresh</button>
+        </div>
+
+        <div id="historyEntriesList" class="space-y-2.5 max-h-[550px] overflow-y-auto pr-1">
+          <div class="text-xs text-slate-500 italic">Loading ledger...</div>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- RATING MODAL -->
+  <div id="rateModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 relative">
+      <button onclick="closeRateModal()" class="absolute top-4 right-4 text-slate-400 hover:text-white p-1"><i class="fa-solid fa-xmark text-lg"></i></button>
+
+      <h3 class="text-base font-bold text-white flex items-center gap-2">
+        <i class="fa-solid fa-star text-amber-400"></i> Rate Movie
+      </h3>
+      <p id="rateModalMovieTitle" class="text-xs text-slate-300 font-semibold truncate bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">Movie Title</p>
+
+      <!-- INTERACTIVE 10-STAR RATING SELECTOR -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between text-xs text-slate-300">
+          <span class="font-medium">Your Rating:</span>
+          <span id="rateValueDisplay" class="font-bold text-amber-400 text-sm px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">8.0 / 10</span>
+        </div>
+
+        <div id="starContainer" class="flex justify-center items-center gap-1.5 py-2 bg-slate-950 rounded-xl border border-slate-800 text-xl">
+          <!-- 10 Stars generated dynamically -->
+        </div>
+
+        <!-- SLIDER CONTROLLER -->
+        <input type="range" id="rateSlider" min="1.0" max="10.0" step="0.5" value="8.0" 
+          class="w-full accent-amber-400 cursor-pointer mt-1"
+          oninput="setRatingValue(parseFloat(this.value))">
+        <div class="flex justify-between text-[10px] text-slate-500 font-medium">
+          <span>1.0 (Dislike)</span>
+          <span>5.0 (Average)</span>
+          <span>10.0 (Masterpiece)</span>
+        </div>
+      </div>
+
+      <!-- OPTIONAL REVIEW NOTES -->
+      <div>
+        <label class="block text-[11px] text-slate-400 mb-1">Optional notes / review:</label>
+        <textarea id="rateReviewText" rows="2" placeholder="e.g. Loved the plot twist and soundtrack..." 
+          class="w-full bg-slate-950 text-xs text-slate-200 rounded-lg p-2.5 border border-slate-800 focus:outline-none focus:border-brand-500"></textarea>
+      </div>
+
+      <div class="flex space-x-2 pt-2">
+        <button onclick="closeRateModal()" class="flex-1 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300">Cancel</button>
+        <button onclick="submitRating()" class="flex-1 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-brand-600 hover:from-amber-400 hover:to-brand-500 text-xs font-semibold text-white shadow-md">Submit Rating</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-20 opacity-0 transition-all duration-300 bg-slate-900 border border-slate-700 text-white text-xs font-semibold px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2">
+    <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400"></i>
+    <span id="toastMsg">Action recorded!</span>
+  </div>
+
+  <script>
+    window.movieDataStore = {};
+    window.lastRecommendations = [];
+    window.currentUserSubscriptions = ["Netflix", "Prime Video", "Disney+"];
+
+    const ALL_STREAMING_PLATFORMS = [
+      "Netflix", "Prime Video", "Disney+", "Max", "Apple TV+", "Hulu", "Paramount+"
+    ];
+
+    const PLATFORM_COLORS = {
+      "Netflix": {
+        active: "bg-red-500/20 text-red-300 border-red-500/50 shadow-sm shadow-red-500/20",
+        inactive: "bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700"
+      },
+      "Prime Video": {
+        active: "bg-sky-500/20 text-sky-300 border-sky-500/50 shadow-sm shadow-sky-500/20",
+        inactive: "bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700"
+      },
+      "Disney+": {
+        active: "bg-blue-500/20 text-blue-300 border-blue-500/50 shadow-sm shadow-blue-500/20",
+        inactive: "bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700"
+      },
+      "Max": {
+        active: "bg-purple-500/20 text-purple-300 border-purple-500/50 shadow-sm shadow-purple-500/20",
+        inactive: "bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700"
+      },
+      "Apple TV+": {
+        active: "bg-zinc-400/20 text-zinc-200 border-zinc-400/50 shadow-sm shadow-zinc-500/20",
+        inactive: "bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700"
+      },
+      "Hulu": {
+        active: "bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm shadow-emerald-500/20",
+        inactive: "bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700"
+      },
+      "Paramount+": {
+        active: "bg-indigo-500/20 text-indigo-300 border-indigo-500/50 shadow-sm shadow-indigo-500/20",
+        inactive: "bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700"
+      }
+    };
+
+    let activeMovieForRating = null;
+    let currentSelectedRating = 8.0;
+
+    function initStarRating() {
+      const container = document.getElementById('starContainer');
+      container.innerHTML = '';
+      for (let i = 1; i <= 10; i++) {
+        const star = document.createElement('button');
+        star.type = 'button';
+        star.dataset.value = i;
+        star.className = 'text-slate-600 hover:scale-125 transition-transform text-lg focus:outline-none';
+        star.innerHTML = '<i class="fa-solid fa-star"></i>';
+        
+        star.addEventListener('click', () => setRatingValue(i));
+        star.addEventListener('mouseenter', () => updateStarVisuals(i));
+        star.addEventListener('mouseleave', () => updateStarVisuals(currentSelectedRating));
+        
+        container.appendChild(star);
+      }
+      updateStarVisuals(currentSelectedRating);
+    }
+
+    function setRatingValue(val) {
+      currentSelectedRating = val;
+      document.getElementById('rateSlider').value = val;
+      document.getElementById('rateValueDisplay').innerText = val.toFixed(1) + ' / 10';
+      updateStarVisuals(val);
+    }
+
+    function updateStarVisuals(val) {
+      const stars = document.getElementById('starContainer').children;
+      for (let i = 0; i < stars.length; i++) {
+        const starVal = i + 1;
+        if (starVal <= val) {
+          stars[i].className = 'text-amber-400 text-lg hover:scale-125 transition-transform focus:outline-none';
+        } else {
+          stars[i].className = 'text-slate-700 text-lg hover:scale-125 transition-transform focus:outline-none';
+        }
+      }
+    }
+
+    function showToast(msg, isSuccess = true) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toastMsg');
+      const toastIcon = document.getElementById('toastIcon');
+      
+      toastMsg.innerText = msg;
+      toastIcon.className = isSuccess ? "fa-solid fa-circle-check text-emerald-400" : "fa-solid fa-circle-exclamation text-amber-400";
+      
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      setTimeout(() => {
+        toast.classList.add('translate-y-20', 'opacity-0');
+      }, 3000);
+    }
+
+    function setQuery(text) {
+      document.getElementById('nlQueryInput').value = text;
+      executeSearch();
+    }
+
+    function switchSidebarTab(tab) {
+      const pTab = document.getElementById('profileTab');
+      const hTab = document.getElementById('historyTab');
+      const pBtn = document.getElementById('tabProfileBtn');
+      const hBtn = document.getElementById('tabHistoryBtn');
+
+      if (tab === 'profile') {
+        pTab.classList.remove('hidden');
+        hTab.classList.add('hidden');
+        pBtn.className = "flex-1 py-2 text-xs font-semibold rounded-lg bg-brand-600 text-white shadow-sm transition-all flex items-center justify-center gap-1.5";
+        hBtn.className = "flex-1 py-2 text-xs font-semibold rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-900/50 transition-all flex items-center justify-center gap-1.5";
+        loadUserProfile();
+      } else {
+        pTab.classList.add('hidden');
+        hTab.classList.remove('hidden');
+        hBtn.className = "flex-1 py-2 text-xs font-semibold rounded-lg bg-brand-600 text-white shadow-sm transition-all flex items-center justify-center gap-1.5";
+        pBtn.className = "flex-1 py-2 text-xs font-semibold rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-900/50 transition-all flex items-center justify-center gap-1.5";
+        loadUserHistory();
+      }
+    }
+
+    function renderSubscriptionsList(activeSubs) {
+      const listDiv = document.getElementById('subscriptionsList');
+      listDiv.innerHTML = '';
+
+      ALL_STREAMING_PLATFORMS.forEach(platform => {
+        const isActive = activeSubs.includes(platform);
+        const style = PLATFORM_COLORS[platform] || {
+          active: "bg-brand-500/20 text-brand-300 border-brand-500/50",
+          inactive: "bg-slate-900/60 text-slate-400 border-slate-800"
+        };
+
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = `px-2.5 py-1 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 ${isActive ? style.active : style.inactive + ' opacity-50 hover:opacity-80'}`;
+        chip.innerHTML = `
+          <i class="fa-solid ${isActive ? 'fa-circle-check text-emerald-400' : 'fa-circle-plus text-slate-500'} text-[11px]"></i>
+          <span>${platform}</span>
+        `;
+        chip.onclick = () => toggleSubscription(platform);
+        listDiv.appendChild(chip);
+      });
+    }
+
+    async function toggleSubscription(platform) {
+      const userId = document.getElementById('userIdInput').value.trim() || 'demo';
+      let subs = [...window.currentUserSubscriptions];
+      if (subs.includes(platform)) {
+        subs = subs.filter(s => s !== platform);
+      } else {
+        subs.push(platform);
+      }
+      window.currentUserSubscriptions = subs;
+      renderSubscriptionsList(subs);
+
+      try {
+        const res = await fetch('/api/subscriptions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId,
+            subscriptions: subs
+          })
+        });
+        const data = await res.json();
+        showToast(`Updated subscriptions (${subs.length} active)`);
+        
+        // Re-render existing movie cards to reflect updated subscription tags
+        if (window.lastRecommendations && window.lastRecommendations.length > 0) {
+          renderMovieCards(window.lastRecommendations);
+        }
+      } catch (err) {
+        showToast("Failed to save subscriptions", false);
+      }
+    }
+
+    async function executeSearch() {
+      const userId = document.getElementById('userIdInput').value.trim() || 'demo';
+      const query = document.getElementById('nlQueryInput').value.trim();
+      const topK = parseInt(document.getElementById('topKSelect').value) || 6;
+
+      const loading = document.getElementById('loadingState');
+      const empty = document.getElementById('emptyState');
+      const grid = document.getElementById('moviesGrid');
+      const countBadge = document.getElementById('resultsCountBadge');
+
+      empty.classList.add('hidden');
+      grid.innerHTML = '';
+      loading.classList.remove('hidden');
+
+      try {
+        const res = await fetch('/api/recommend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId,
+            natural_language: query || null,
+            subscriptions: window.currentUserSubscriptions,
+            top_k: topK
+          })
+        });
+
+        const data = await res.json();
+        loading.classList.add('hidden');
+
+        if (!data.recommendations || data.recommendations.length === 0) {
+          empty.classList.remove('hidden');
+          countBadge.classList.add('hidden');
+          window.lastRecommendations = [];
+          return;
+        }
+
+        countBadge.innerText = `${data.recommendations.length} movies`;
+        countBadge.classList.remove('hidden');
+
+        window.lastRecommendations = data.recommendations;
+        renderMovieCards(data.recommendations);
+        loadUserProfile();
+      } catch (err) {
+        loading.classList.add('hidden');
+        empty.classList.remove('hidden');
+        showToast("Search failed: " + err.message, false);
+      }
+    }
+
+    function renderMovieCards(recs) {
+      const grid = document.getElementById('moviesGrid');
+      grid.innerHTML = '';
+
+      const userSubs = window.currentUserSubscriptions || [];
+
+      recs.forEach(r => {
+        const m = r.movie;
+        window.movieDataStore[m.id] = m;
+
+        const posterUrl = m.poster_path 
+          ? (m.poster_path.startsWith('http') ? m.poster_path : `https://image.tmdb.org/t/p/w500${m.poster_path}`)
+          : null;
+        
+        const year = m.release_date ? m.release_date.slice(0, 4) : '';
+        const genres = (m.genres || []).map(g => typeof g === 'string' ? g : g.name).filter(Boolean);
+        const platforms = m.streaming_platforms || [];
+
+        const hasActiveSub = platforms.some(p => userSubs.includes(p));
+
+        const card = document.createElement('div');
+        card.className = "glass rounded-2xl p-4 flex flex-col justify-between hover:border-brand-500/40 transition-all hover:shadow-xl hover:shadow-brand-500/10 group";
+
+        const platformBadgesHtml = platforms.map(p => {
+          const isUserSub = userSubs.includes(p);
+          const style = PLATFORM_COLORS[p] || {
+            active: "bg-brand-500/20 text-brand-300 border-brand-500/40",
+            inactive: "bg-slate-900 text-slate-400 border-slate-800"
+          };
+          return `
+            <span class="px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 ${isUserSub ? style.active : style.inactive}">
+              ${isUserSub ? '<i class="fa-solid fa-check text-[9px] text-emerald-400"></i>' : ''}
+              ${p}
+            </span>
+          `;
+        }).join('');
+
+        card.innerHTML = `
+          <div>
+            <div class="flex gap-4">
+              <!-- POSTER -->
+              <div class="w-24 h-36 bg-slate-900 rounded-xl overflow-hidden flex-shrink-0 relative border border-slate-800 shadow-md">
+                ${posterUrl 
+                  ? `<img src="${posterUrl}" alt="${m.title}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">`
+                  : `<div class="w-full h-full flex flex-col items-center justify-center text-slate-600 text-xs p-2 text-center"><i class="fa-solid fa-film text-xl mb-1"></i>No Poster</div>`
+                }
+                <div class="absolute top-1 left-1 bg-black/80 px-1.5 py-0.5 rounded text-[10px] font-bold text-amber-400 flex items-center gap-1">
+                  <i class="fa-solid fa-star text-[9px]"></i> ${(m.vote_average || 0).toFixed(1)}
+                </div>
+              </div>
+
+              <!-- INFO -->
+              <div class="flex-1 min-w-0">
+                <div class="flex items-start justify-between gap-1">
+                  <h3 class="font-bold text-white text-sm leading-snug truncate group-hover:text-brand-300 transition-colors" title="${m.title}">${m.title}</h3>
+                  <span class="text-[11px] text-slate-400 font-medium flex-shrink-0">${year}</span>
+                </div>
+
+                <!-- GENRES -->
+                <div class="flex flex-wrap gap-1 mt-1.5">
+                  ${genres.slice(0, 3).map(g => `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-[10px] font-medium text-slate-300 border border-slate-700/60">${g}</span>`).join('')}
+                </div>
+
+                <!-- OVERVIEW -->
+                <p class="text-xs text-slate-400 mt-2 line-clamp-2 leading-relaxed">${m.overview || 'No overview available.'}</p>
+                
+                <!-- STREAMING PLATFORMS -->
+                <div class="mt-2.5 flex flex-wrap items-center gap-1">
+                  <span class="text-[10px] text-slate-500 font-medium mr-0.5"><i class="fa-solid fa-tv text-[9px]"></i> Stream:</span>
+                  ${platformBadgesHtml}
+                  ${hasActiveSub ? '<span class="ml-1 text-[9px] text-emerald-400 font-semibold px-1.5 py-0.2 rounded bg-emerald-500/10 border border-emerald-500/30">On your plan</span>' : ''}
+                </div>
+              </div>
+            </div>
+
+            <!-- AI REASONING BOX -->
+            <div class="mt-3.5 bg-brand-950/40 border border-brand-800/40 rounded-xl p-3">
+              <div class="flex items-center gap-1.5 text-[11px] font-semibold text-brand-300 mb-1">
+                <i class="fa-solid fa-sparkles text-[10px] text-brand-400"></i> Why You'll Like It:
+              </div>
+              <p class="text-xs text-slate-300 leading-relaxed italic">${r.reasoning || 'Matches your high-affinity genres and past highly rated films.'}</p>
+            </div>
+          </div>
+
+          <!-- INTERACTIVE ACTION BAR -->
+          <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
+            <div class="flex items-center space-x-1">
+              <button onclick="handleInteraction(${m.id}, 'marked_watched')" class="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-emerald-950/60 hover:text-emerald-300 text-slate-300 border border-slate-800 transition-colors flex items-center gap-1 active:scale-95" title="Mark as Watched">
+                <i class="fa-solid fa-eye text-[11px]"></i> Watched
+              </button>
+              <button onclick="handleInteraction(${m.id}, 'added_to_watchlist')" class="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-indigo-950/60 hover:text-indigo-300 text-slate-300 border border-slate-800 transition-colors flex items-center gap-1 active:scale-95" title="Save to Watchlist">
+                <i class="fa-solid fa-bookmark text-[11px]"></i> Watchlist
+              </button>
+            </div>
+
+            <button onclick="openRateModal(${m.id})" class="px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold transition-all flex items-center gap-1.5 active:scale-95">
+              <i class="fa-solid fa-star text-amber-400 text-[11px]"></i> Rate
+            </button>
+          </div>
+        `;
+
+        grid.appendChild(card);
+      });
+    }
+
+    async function handleInteraction(movieId, eventType) {
+      const m = window.movieDataStore[movieId] || { id: movieId, title: `Movie #${movieId}` };
+      const userId = document.getElementById('userIdInput').value.trim() || 'demo';
+      try {
+        const res = await fetch('/api/interact', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId,
+            movie_id: movieId,
+            event_type: eventType,
+            metadata: {
+              title: m.title,
+              genres: m.genres || [],
+              keywords: m.keywords || [],
+              director: m.director || [],
+              cast: m.cast || [],
+              release_date: m.release_date || "",
+              overview: m.overview || ""
+            }
+          })
+        });
+        const data = await res.json();
+        showToast(`Recorded "${eventType.replace(/_/g, ' ')}" for ${m.title}!`);
+        loadUserProfile();
+        loadUserHistory();
+      } catch (err) {
+        showToast("Error saving interaction", false);
+      }
+    }
+
+    function openRateModal(movieId) {
+      const m = window.movieDataStore[movieId] || { id: movieId, title: `Movie #${movieId}`, genres: [] };
+      activeMovieForRating = m;
+      document.getElementById('rateModalMovieTitle').innerText = m.title;
+      document.getElementById('rateReviewText').value = "";
+      setRatingValue(8.0);
+      document.getElementById('rateModal').classList.remove('hidden');
+    }
+
+    function closeRateModal() {
+      document.getElementById('rateModal').classList.add('hidden');
+      activeMovieForRating = null;
+    }
+
+    async function submitRating() {
+      if (!activeMovieForRating) return;
+      const userId = document.getElementById('userIdInput').value.trim() || 'demo';
+      const ratingVal = currentSelectedRating;
+      const reviewText = document.getElementById('rateReviewText').value.trim();
+      const ratedTitle = activeMovieForRating.title || `Movie #${activeMovieForRating.id}`;
+
+      try {
+        const res = await fetch('/api/rate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId,
+            movie_id: activeMovieForRating.id,
+            rating: ratingVal,
+            review_text: reviewText || null,
+            metadata: {
+              title: activeMovieForRating.title,
+              genres: activeMovieForRating.genres || [],
+              keywords: activeMovieForRating.keywords || [],
+              director: activeMovieForRating.director || [],
+              cast: activeMovieForRating.cast || [],
+              release_date: activeMovieForRating.release_date || "",
+              overview: activeMovieForRating.overview || ""
+            }
+          })
+        });
+        const data = await res.json();
+        closeRateModal();
+        showToast(`Rated ${ratedTitle} ⭐ ${ratingVal}/10! Memory updated.`);
+        loadUserProfile();
+        loadUserHistory();
+      } catch (err) {
+        showToast("Failed to record rating", false);
+      }
+    }
+
+    async function loadUserProfile() {
+      const userId = document.getElementById('userIdInput').value.trim() || 'demo';
+      try {
+        const res = await fetch(`/api/profile/${userId}`);
+        const data = await res.json();
+        
+        const stats = data.stats;
+        const prof = data.profile;
+
+        // Subscriptions
+        if (prof.subscriptions && Array.isArray(prof.subscriptions)) {
+          window.currentUserSubscriptions = prof.subscriptions;
+        }
+        renderSubscriptionsList(window.currentUserSubscriptions);
+
+        // Update memory balance
+        document.getElementById('memoryBalanceText').innerText = `${stats.short_term_pct}% Short / ${stats.long_term_pct}% Long`;
+        document.getElementById('balanceRatio').innerText = `${stats.short_term_pct}% Short / ${stats.long_term_pct}% Long`;
+        document.getElementById('shortTermBar').style.width = `${stats.short_term_pct}%`;
+        document.getElementById('longTermBar').style.width = `${stats.long_term_pct}%`;
+
+        // Update Learning Curve stats & animated SVG marker
+        const nInteractions = stats.total_interactions || 0;
+        document.getElementById('statInteractions').innerText = nInteractions;
+        document.getElementById('statConfidence').innerText = `${stats.confidence_pct || 0}%`;
+        document.getElementById('statStability').innerText = stats.stability || 'Exploration';
+        document.getElementById('learningStageBadge').innerText = stats.stage || '🌱 Initial Discovery';
+
+        const marker = document.getElementById('curveUserMarker');
+        if (marker) {
+          const clampedN = Math.min(10, nInteractions);
+          const posX = 20 + (clampedN / 10.0) * 215;
+          // Beta curve Y: smoothly goes from Y=12 down to Y=44
+          const posY = 12 + (clampedN / 10.0) * 32;
+          marker.setAttribute('transform', `translate(${posX.toFixed(1)}, ${posY.toFixed(1)})`);
+        }
+
+        // Render Genres (combining short & long term)
+        const genresDiv = document.getElementById('topGenresList');
+        let topGenresData = data.combined_genres || [];
+        if (topGenresData.length === 0) {
+          const longGenres = prof.long_term_preferences?.genre || {};
+          topGenresData = Object.entries(longGenres)
+            .filter(([_, p]) => p.score > 0)
+            .sort((a, b) => b[1].score - a[1].score)
+            .map(([name, p]) => ({ name, score: p.score, confidence: p.confidence }));
+        }
+
+        if (topGenresData.length === 0) {
+          genresDiv.innerHTML = '<div class="text-xs text-slate-500 italic">No ratings or searches yet</div>';
+        } else {
+          genresDiv.innerHTML = topGenresData.slice(0, 6).map(g => `
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="capitalize text-slate-300 font-medium">${g.name}</span>
+                <span class="text-slate-400 font-mono text-[11px]">${(g.score).toFixed(2)}</span>
+              </div>
+              <div class="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                <div class="bg-brand-500 h-full rounded-full" style="width: ${Math.min(100, g.score * 200)}%"></div>
+              </div>
+            </div>
+          `).join('');
+        }
+
+        // Render Keywords / Tropes (combining all searched + rated affinities)
+        const keywordsDiv = document.getElementById('topKeywordsList');
+        let allKeywords = data.combined_affinities || [];
+        
+        if (allKeywords.length === 0) {
+          const kwMap = {};
+          const longKw = prof.long_term_preferences?.keyword || {};
+          const shortKw = prof.short_term_preferences?.keyword || {};
+          for (const [k, p] of Object.entries(longKw)) {
+            kwMap[k] = (kwMap[k] || 0) + (p.score || 0);
+          }
+          for (const [k, s] of Object.entries(shortKw)) {
+            const sc = typeof s === 'number' ? s : (s.score || 0);
+            kwMap[k] = (kwMap[k] || 0) + sc * 0.5;
+          }
+          allKeywords = Object.entries(kwMap)
+            .filter(([_, s]) => s > 0)
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, score]) => ({ name, score }));
+        }
+
+        if (allKeywords.length === 0) {
+          keywordsDiv.innerHTML = '<div class="text-xs text-slate-500 italic">No tropes or affinities tracked yet. Search or rate movies to build your profile!</div>';
+        } else {
+          // Display up to 24 keywords/affinities with tags
+          keywordsDiv.innerHTML = allKeywords.slice(0, 24).map(kw => `
+            <span class="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-[11px] font-medium text-slate-300 rounded-md border border-slate-800 capitalize transition-colors flex items-center gap-1 shadow-sm">
+              <i class="fa-solid fa-tag text-[9px] text-brand-400"></i>
+              <span>${kw.name}</span>
+              <span class="text-brand-400 font-bold ml-0.5 text-[10px]">${(kw.score).toFixed(2)}</span>
+            </span>
+          `).join('');
+        }
+
+        // Render Negative Preferences
+        const negDiv = document.getElementById('negativePrefsList');
+        const negObj = prof.negative_preferences || {};
+        let negHtml = '';
+        for (const [cat, items] of Object.entries(negObj)) {
+          for (const [name, neg] of Object.entries(items)) {
+            negHtml += `
+              <div class="flex justify-between items-center py-1 border-b border-slate-900">
+                <span class="capitalize text-slate-300 font-medium">${cat}: <span class="text-rose-300">${name}</span></span>
+                <span class="text-rose-400 font-mono text-[11px]">-${(neg.penalty_weight).toFixed(2)}</span>
+              </div>
+            `;
+          }
+        }
+        negDiv.innerHTML = negHtml || '<div class="text-xs text-slate-500 italic">No negative penalties recorded.</div>';
+
+      } catch (err) {
+        console.error("Error loading profile:", err);
+      }
+    }
+
+    async function loadUserHistory() {
+      const userId = document.getElementById('userIdInput').value.trim() || 'demo';
+      const histList = document.getElementById('historyEntriesList');
+
+      try {
+        const res = await fetch(`/api/history/${userId}`);
+        const data = await res.json();
+
+        const allItems = [];
+        (data.ratings || []).forEach(r => {
+          allItems.push({
+            type: 'rating',
+            title: r.review_text || `Movie #${r.movie_id}`,
+            detail: `Rated ⭐ ${r.rating}/10`,
+            ts: r.timestamp
+          });
+        });
+
+        (data.events || []).forEach(e => {
+          const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {});
+          allItems.push({
+            type: e.event_type,
+            title: meta.title || `Movie #${e.movie_id}`,
+            detail: e.event_type.replace(/_/g, ' '),
+            ts: e.timestamp
+          });
+        });
+
+        allItems.sort((a, b) => b.ts - a.ts);
+
+        if (allItems.length === 0) {
+          histList.innerHTML = '<div class="text-xs text-slate-500 italic">No history logged yet.</div>';
+          return;
+        }
+
+        histList.innerHTML = allItems.map(item => {
+          const dateStr = item.ts ? new Date(item.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+          const icon = item.type === 'rating' ? 'fa-star text-amber-400' :
+                       item.type === 'marked_watched' ? 'fa-eye text-emerald-400' :
+                       item.type === 'added_to_watchlist' ? 'fa-bookmark text-indigo-400' : 'fa-mouse-pointer text-slate-400';
+
+          return `
+            <div class="bg-slate-900/90 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between text-xs">
+              <div class="flex items-center space-x-2.5 min-w-0">
+                <i class="fa-solid ${icon} text-xs"></i>
+                <div class="truncate">
+                  <p class="font-semibold text-slate-200 truncate">${item.title}</p>
+                  <p class="text-[10px] text-slate-400 capitalize">${item.detail}</p>
+                </div>
+              </div>
+              <span class="text-[10px] text-slate-500 font-mono flex-shrink-0 ml-2">${dateStr}</span>
+            </div>
+          `;
+        }).join('');
+
+      } catch (err) {
+        histList.innerHTML = '<div class="text-xs text-rose-400">Failed to load history</div>';
+      }
+    }
+
+    // Initial load on page ready
+    window.addEventListener('DOMContentLoaded', () => {
+      initStarRating();
+      loadUserProfile();
+      loadUserHistory();
+      setQuery('feel-good comforting movie 2024');
+    });
+  </script>
+</body>
+</html>
+

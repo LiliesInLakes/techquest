@@ -17,6 +17,12 @@ try:
 except ImportError:
     yaml = None
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 @dataclass
 class ExtractedFeatures:
@@ -140,18 +146,28 @@ class NLFeatureExtractor:
         self.config = self._load_config(config_path)
         deepseek_config = self.config.get("deepseek", {})
 
-        self.api_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
-        # Don't raise: without a key or library the extractor degrades to regex fallback
-        # so the pipeline still runs end-to-end (lower extraction quality).
-        self._llm_available = bool(
-            OPENAI_AVAILABLE and self.api_key and self.api_key != "${DEEPSEEK_API_KEY}"
-            and "your_deepseek_api_key" not in self.api_key
-        )
-        if not self._llm_available:
-            print("DeepSeek/OpenAI not configured, NL extraction uses regex fallback", file=sys.stderr)
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
 
-        self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
-        self.model = deepseek_config.get("model", "deepseek-chat")
+        if OPENAI_AVAILABLE and deepseek_key and deepseek_key != "${DEEPSEEK_API_KEY}" and "your_deepseek_api_key" not in deepseek_key:
+            self.api_key = deepseek_key
+            self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
+            self.model = deepseek_config.get("model", "deepseek-chat")
+            self._llm_available = True
+        elif OPENAI_AVAILABLE and openrouter_key and openrouter_key != "${OPENROUTER_API_KEY}" and "your_openrouter_api_key" not in openrouter_key:
+            self.api_key = openrouter_key
+            self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            self.model = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
+            self._llm_available = True
+        else:
+            self.api_key = None
+            self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
+            self.model = deepseek_config.get("model", "deepseek-chat")
+            self._llm_available = False
+            if not OPENAI_AVAILABLE:
+                print("OpenAI client not installed, NL extraction uses regex fallback", file=sys.stderr)
+            else:
+                print("Neither DeepSeek nor OpenRouter configured, NL extraction uses regex fallback", file=sys.stderr)
 
         self.client = AsyncOpenAI(
             api_key=self.api_key or "no-key",
@@ -585,6 +601,20 @@ RULES:
         # Language
         if features.original_language:
             params["language"] = features.original_language
+
+        # Text-based date/runtime fallbacks if not already set
+        text = (features.original_text or "").lower()
+        if "primary_release_date_gte" not in params:
+            if "after 2024" in text or "since 2024" in text or "2024 or later" in text or "from 2024" in text or "post 2024" in text or "2024+" in text:
+                params["primary_release_date_gte"] = "2024-01-01"
+            elif "after 2023" in text or "since 2023" in text or "2023+" in text:
+                params["primary_release_date_gte"] = "2023-01-01"
+            elif features.decades:
+                dec = features.decades[0]
+                if dec.endswith('s') and dec[:-1].isdigit():
+                    start_yr = int(dec[:-1])
+                    params["primary_release_date_gte"] = f"{start_yr}-01-01"
+                    params["primary_release_date_lte"] = f"{start_yr + 9}-12-31"
 
         return params
 
