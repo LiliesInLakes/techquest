@@ -1,16 +1,18 @@
-# Byte-compiled / optimized / DLL files
+# Environment / secrets
+.env
+.env.local
+*.env
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# Environments and Secrets
-.env
-.env.local
-*.env
+# Virtual environments
 .venv/
-env/
 venv/
+env/
 ENV/
 
 # Distribution / packaging
@@ -33,16 +35,46 @@ wheels/
 # Operating System Files
 .DS_Store
 Thumbs.db
+
+# IDE / editor settings
 .vscode/
 .idea/
 *.swp
 *.swo
 
+# Local/generated files & datasets
+hist.json
+data/analytics/
+data/processed/
+data/ml-32m/
+
+<<<<<<< Updated upstream
 # Local databases
 *.db
 data/*.db
 data/memory.db
+movie_features.db
+
+# Local datasets
+data/ml-32m/
 
 # Testing & logs
 .pytest_cache/
 *.log
+
+# Local handoff / audit files
+TO_PUSH.md
+TO_PUSH_AUDIT.md
+build_progress.json
+run_stderr.log
+=======
+# Generated database & build artifacts
+movie_features.db
+build_progress.json
+TO_PUSH.md
+TO_PUSH_AUDIT.md
+run_stderr.log
+
+# VS Code settings
+.vscode/
+>>>>>>> Stashed changes
