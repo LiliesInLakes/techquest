@@ -154,8 +154,8 @@ class MovieRanker:
             
             scores = {}
             scores['imdb'] = self._compute_imdb_score(movie)
-            scores['tfidf'] = self._compute_tfidf_score(movie_id, query_tfidf)
-            scores['semantic'] = self._compute_semantic_score(movie_id, query_embedding)
+            scores['tfidf'] = self._compute_tfidf_score(movie_id, query_tfidf, movie)
+            scores['semantic'] = self._compute_semantic_score(movie_id, query_embedding, movie)
             scores['popularity'] = self._compute_popularity_score(movie)
             scores['watch_history'] = 0.0
             scores['content'] = 0.0
@@ -190,7 +190,8 @@ class MovieRanker:
         user_profile,
         extracted_features,
         feature_matrix,
-        history_boost_factor: float = 0.3
+        history_boost_factor: float = 0.3,
+        candidate_lookup: Optional[Dict[int, Dict[str, Any]]] = None
     ) -> List[RankedMovie]:
         """Stage 2: Apply history boost within matching genre clusters"""
         if not stage1_ranked or user_profile is None or self.preference_extractor is None:
@@ -201,9 +202,10 @@ class MovieRanker:
         boosted = []
         for rm in stage1_ranked:
             movie_genres = set(g.lower() for g in rm.genres)
+            cand_meta = candidate_lookup.get(rm.movie_id, {}) if candidate_lookup else {}
             
             genre_match = bool(extracted_genres & movie_genres) if extracted_genres else True
-            penalty = self.compute_negative_penalty(rm.movie_id, user_profile, feature_matrix)
+            penalty = self.compute_negative_penalty(rm.movie_id, user_profile, feature_matrix, movie_dict=cand_meta)
             
             if genre_match:
                 history_score = self.preference_extractor.compute_content_similarity(
@@ -267,7 +269,13 @@ class MovieRanker:
         boosted.sort(key=lambda x: x.score, reverse=True)
         return boosted
 
-    def compute_negative_penalty(self, movie_id: int, user_profile, feature_matrix=None) -> float:
+    def compute_negative_penalty(
+        self,
+        movie_id: int,
+        user_profile,
+        feature_matrix=None,
+        movie_dict: Optional[Dict[str, Any]] = None
+    ) -> float:
         """
         Computes blended negative penalty:
         penalty(movie) = 1.0 - min(0.9, 0.75 * max_{f in movie}(neg(f)) + 0.25 * (1/|F|) * sum_{f in movie} neg(f))
@@ -279,17 +287,26 @@ class MovieRanker:
             return 1.0
 
         fm = feature_matrix or self.feature_matrix
-        if fm is None or not hasattr(fm, "movie_metadata") or movie_id not in fm.movie_metadata:
+        meta = None
+        if fm is not None and hasattr(fm, "movie_metadata") and movie_id in fm.movie_metadata:
+            meta = fm.movie_metadata[movie_id]
+        elif movie_dict:
+            meta = movie_dict
+
+        if not meta:
             return 1.0
 
-        meta = fm.movie_metadata[movie_id]
         features = []
         for g in meta.get("genres", []):
             if isinstance(g, str):
                 features.append(g.strip().lower())
+            elif isinstance(g, dict) and "name" in g:
+                features.append(g["name"].strip().lower())
         for kw in meta.get("keywords", []):
             if isinstance(kw, str):
                 features.append(kw.strip().lower())
+            elif isinstance(kw, dict) and "name" in kw:
+                features.append(kw["name"].strip().lower())
         for d in meta.get("director", []):
             if isinstance(d, str):
                 features.append(d.strip().lower())
@@ -337,18 +354,18 @@ class MovieRanker:
         query_tfidf: csr_matrix = None
     ) -> Dict[str, float]:
         movie_id = movie.get('id') or movie.get('movie_id')
-        meta = self.feature_matrix.movie_metadata[movie_id]
+        meta = self.feature_matrix.movie_metadata.get(movie_id, movie) if self.feature_matrix and hasattr(self.feature_matrix, "movie_metadata") else movie
         
         scores = {}
         
         scores['imdb'] = self._compute_imdb_score(movie)
-        scores['tfidf'] = self._compute_tfidf_score(movie_id, query_tfidf)
+        scores['tfidf'] = self._compute_tfidf_score(movie_id, query_tfidf, movie)
         scores['watch_history'] = self._compute_watch_history_score(movie_id, user_profile)
-        scores['semantic'] = self._compute_semantic_score(movie_id, query_embedding)
+        scores['semantic'] = self._compute_semantic_score(movie_id, query_embedding, movie)
         scores['content'] = self._compute_content_score(movie_id, user_profile)
         scores['keyword_overlap'] = self._compute_keyword_overlap_score(movie_id, user_profile)
         scores['popularity'] = self._compute_popularity_score(movie)
-        scores['negative_penalty'] = self.compute_negative_penalty(movie_id, user_profile, self.feature_matrix)
+        scores['negative_penalty'] = self.compute_negative_penalty(movie_id, user_profile, self.feature_matrix, movie_dict=movie)
         
         return scores
 
@@ -368,9 +385,7 @@ class MovieRanker:
                 log_c = math.log1p(cnt)
                 yr = self._extract_release_year(meta)
                 if yr is not None:
-                    if yr not in year_to_logs:
-                        year_to_logs[yr] = []
-                    year_to_logs[yr].append(log_c)
+                    year_to_logs.setdefault(yr, []).append(log_c)
 
         self._global_max_rating_count = max(all_counts) if all_counts else 102929
         self._global_log_max = math.log1p(self._global_max_rating_count)
@@ -484,14 +499,15 @@ class MovieRanker:
         if mid and self.feature_matrix and hasattr(self.feature_matrix, "movie_metadata"):
             meta = self.feature_matrix.movie_metadata.get(mid, {})
             if meta:
-                meta_rc = meta.get('rating_count') or meta.get('vote_count')
-                if meta_rc is not None:
+                m_rc = meta.get('rating_count') or meta.get('vote_count')
+                if m_rc is not None:
                     try:
-                        val = int(meta_rc)
+                        val = int(m_rc)
                         if val > 0:
                             return val
                     except (ValueError, TypeError):
                         pass
+
         return 0
 
     def _compute_stage1_score(self, scores: Dict[str, float]) -> float:
@@ -513,18 +529,30 @@ class MovieRanker:
         
         return vote_avg / 10.0
 
-    def _compute_tfidf_score(self, movie_id: int, query_tfidf: csr_matrix) -> float:
-        if query_tfidf is None or self.feature_matrix is None:
+    def _compute_tfidf_score(
+        self,
+        movie_id: int,
+        query_tfidf: csr_matrix,
+        movie: Optional[Dict[str, Any]] = None
+    ) -> float:
+        if query_tfidf is None:
             return 0.0
         
         try:
             movie_idx = None
-            if hasattr(self.feature_matrix, "tmdb_id_to_idx") and isinstance(self.feature_matrix.tmdb_id_to_idx, dict):
-                movie_idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
-            elif hasattr(self.feature_matrix, "movie_ids") and isinstance(self.feature_matrix.movie_ids, list):
-                movie_idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
+            if self.feature_matrix is not None:
+                if hasattr(self.feature_matrix, "tmdb_id_to_idx") and isinstance(self.feature_matrix.tmdb_id_to_idx, dict):
+                    movie_idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
+                elif hasattr(self.feature_matrix, "movie_ids") and isinstance(self.feature_matrix.movie_ids, list):
+                    movie_idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
                 
             if movie_idx is None or not isinstance(movie_idx, (int, np.integer)):
+                if movie and 'tfidf_vector' in movie and movie['tfidf_vector'] is not None:
+                    movie_tfidf = movie['tfidf_vector']
+                    if hasattr(movie_tfidf, 'toarray'):
+                        movie_tfidf = movie_tfidf.toarray()
+                    sim = cosine_similarity(query_tfidf, movie_tfidf)[0][0]
+                    return float(sim)
                 return 0.0
 
             movie_tfidf = self.feature_matrix.tfidf_matrix[movie_idx]
@@ -543,22 +571,32 @@ class MovieRanker:
         
         return self.preference_extractor.compute_content_similarity(user_profile, movie_id, self.feature_matrix)
 
-    def _compute_semantic_score(self, movie_id: int, query_embedding: np.ndarray) -> float:
-        if query_embedding is None or self.feature_matrix is None:
+    def _compute_semantic_score(
+        self,
+        movie_id: int,
+        query_embedding: np.ndarray,
+        movie: Optional[Dict[str, Any]] = None
+    ) -> float:
+        if query_embedding is None:
             return 0.0
         
         try:
             movie_idx = None
-            if hasattr(self.feature_matrix, "tmdb_id_to_idx") and isinstance(self.feature_matrix.tmdb_id_to_idx, dict):
-                movie_idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
-            elif hasattr(self.feature_matrix, "movie_ids") and isinstance(self.feature_matrix.movie_ids, list):
-                movie_idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
+            if self.feature_matrix is not None:
+                if hasattr(self.feature_matrix, "tmdb_id_to_idx") and isinstance(self.feature_matrix.tmdb_id_to_idx, dict):
+                    movie_idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
+                elif hasattr(self.feature_matrix, "movie_ids") and isinstance(self.feature_matrix.movie_ids, list):
+                    movie_idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
                 
             if movie_idx is None or not isinstance(movie_idx, (int, np.integer)):
-                return 0.0
+                if movie and 'semantic_embedding' in movie and movie['semantic_embedding'] is not None:
+                    m_vec = np.asarray(movie['semantic_embedding']).flatten()
+                else:
+                    return 0.0
+            else:
+                m_vec = np.asarray(self.feature_matrix.semantic_embeddings[movie_idx]).flatten()
 
             q_vec = np.asarray(query_embedding).flatten()
-            m_vec = np.asarray(self.feature_matrix.semantic_embeddings[movie_idx]).flatten()
             norm_q = np.linalg.norm(q_vec)
             norm_m = np.linalg.norm(m_vec)
             if norm_q == 0 or norm_m == 0:

@@ -18,6 +18,8 @@ from src.llm.reasoning import DeepSeekReasoner, ReasoningTemplateEngine, Recomme
 from src.llm.nl_feature_extractor import NLFeatureExtractor, ExtractedFeatures
 from src.memory.service import UserMemoryService
 
+MAX_DYNAMIC_LIVE_CANDIDATES: int = 200
+
 
 @dataclass
 class RecommendationResult:
@@ -90,7 +92,7 @@ class MovieRecommender:
     async def initialize(self):
         if self._initialized:
             return
-        
+
         try:
             self.tmdb_client = TMDBClient(config_path=self.config_path)
         except ValueError as e:
@@ -99,7 +101,7 @@ class MovieRecommender:
             print(f"TMDB not configured ({e}), using local candidate pool only", file=sys.stderr)
             self.tmdb_client = None
         self.matrix_builder = FeatureMatrixBuilder(config_path=self.config_path)
-        
+
         try:
             self.matrix_builder, self.feature_matrix, _ = \
                 FeatureMatrixBuilder.load(self.config_path)
@@ -108,7 +110,7 @@ class MovieRecommender:
             print(f"Precomputed matrix issue ({e}), building from {self.matrix_builder.db_path}...", file=sys.stderr)
             self.feature_matrix = self.matrix_builder.build_and_save()
         self.semantic_index = None
-        
+
         model_name = self.rec_config.get("semantic_model_name", "multi-qa-mpnet-base-dot-v1")
         kw_path = Path("data/processed/keyword_embeddings.pkl")
         if kw_path.exists():
@@ -128,26 +130,26 @@ class MovieRecommender:
             )
             self.semantic_search.build_index(self.feature_matrix.feature_names)
             self.semantic_search.save(str(kw_path))
-        
+
         self.hybrid_matcher = HybridKeywordMatcher(
             self.semantic_search, self.feature_matrix.feature_names
         )
-        
+
         self.preference_extractor = PreferenceExtractor(
             feature_matrix=self.feature_matrix,
             semantic_search=self.semantic_search
         )
-        
+
         self.memory_service = UserMemoryService(
             db_path=self.config.get("memory", {}).get("db_path", "data/memory.db"),
             feature_matrix=self.feature_matrix
         )
-        
+
         self.ranker = MovieRanker(config_path=self.config_path)
         self.ranker.set_dependencies(
             self.preference_extractor, self.feature_matrix, self.semantic_search
         )
-        
+
         try:
             self.reasoner = DeepSeekReasoner(config_path=self.config_path)
         except ValueError:
@@ -158,7 +160,7 @@ class MovieRecommender:
             config_path=self.config_path,
             semantic_search=self.semantic_search
         )
-        
+
         self._initialized = True
 
     async def search_movies(
@@ -230,11 +232,11 @@ class MovieRecommender:
         await self.initialize()
         if top_k is None:
             top_k = int(self.rec_config.get("final_recommendations", 1))
-        
+
         preferences = preferences or {}
         subscriptions = subscriptions or []
         watch_history = watch_history or []
-        
+
         if watch_history:
             ratings = {}
             for entry in watch_history:
@@ -242,7 +244,7 @@ class MovieRecommender:
                 rating = entry.get('rating', 0)
                 if rating > 0:
                     ratings[movie_id] = rating
-            
+
             user_profile = self.preference_extractor.extract_preferences(
                 watch_history, ratings, self.feature_matrix
             )
@@ -255,7 +257,7 @@ class MovieRecommender:
                 user_profile = self.memory_service.get_combined_preference_profile(user_id)
             else:
                 user_profile = self.preference_extractor.extract_preferences([], {}, self.feature_matrix)
-        
+
         extracted_features = None
         if natural_language:
             context = {
@@ -265,11 +267,11 @@ class MovieRecommender:
                 "watch_history_summary": self._summarize_watch_history(watch_history)
             }
             extracted_features = await self.nl_extractor.extract(natural_language, context)
-            
+
             if self.feature_matrix:
                 vocab = set(self.feature_matrix.feature_names)
                 extracted_features = self.nl_extractor.map_to_vocabulary(extracted_features, vocab)
-        
+
         resolved_ref = None
         if extracted_features and extracted_features.reference_movies:
             for ref_name in extracted_features.reference_movies:
@@ -280,20 +282,71 @@ class MovieRecommender:
         candidate_movies = await self._get_candidate_movies_stage1(
             extracted_features, subscriptions, region, language, user_profile, resolved_ref=resolved_ref
         )
-        
+
         if not candidate_movies:
+            explanation = "No movies matched all criteria."
+            if natural_language:
+                explanation = f"No movies found matching '{natural_language}'. Try broadening your search or relaxing the release year / filters."
             return {
                 'recommendations': [],
+                'explanation': explanation,
                 'user_profile': {
-                    'top_genres': user_profile.top_genres[:5],
-                    'top_keywords': user_profile.top_keywords[:10],
-                    'avg_rating': user_profile.avg_rating,
-                    'watch_count': user_profile.watch_count
+                    'top_genres': getattr(user_profile, 'top_genres', [])[:5] if user_profile else [],
+                    'top_keywords': getattr(user_profile, 'top_keywords', [])[:10] if user_profile else [],
+                    'avg_rating': getattr(user_profile, 'avg_rating', 0.0) if user_profile else 0.0,
+                    'watch_count': getattr(user_profile, 'watch_count', 0) if user_profile else 0
                 }
             }
-        
+
         query_text = extracted_features.query_text if extracted_features else self._build_query_from_profile(user_profile, preferences)
         query_count, query_tfidf, query_embedding = self.matrix_builder.transform_query(query_text)
+
+        # Dynamic query-time embeddings & TF-IDF for live TMDB candidates (out-of-corpus)
+        all_live_candidates = [c for c in candidate_movies if not c.get('is_local', True)]
+        total_live_count = len(all_live_candidates)
+        max_dynamic_cap = int(self.rec_config.get("max_dynamic_live_candidates", MAX_DYNAMIC_LIVE_CANDIDATES))
+
+        # Strictly enforce bound BEFORE computing TF-IDF or calling SentenceTransformer.encode()
+        live_candidates = all_live_candidates[:max_dynamic_cap]
+        embedded_count = len(live_candidates)
+
+        if total_live_count > 0:
+            print(
+                f"[Dynamic Embedding] Live TMDB candidates: {total_live_count} | "
+                f"Dynamic embedding cap: {max_dynamic_cap} | "
+                f"Embedded live candidates: {embedded_count}",
+                file=sys.stderr
+            )
+
+        # Keep local candidates intact, and bound live candidates to at most max_dynamic_cap (preserving TMDB discovery ordering)
+        local_candidates = [c for c in candidate_movies if c.get('is_local', True)]
+        candidate_movies = local_candidates + live_candidates
+
+        if live_candidates and self.matrix_builder is not None:
+            live_texts = []
+            for c in live_candidates:
+                t = c.get('title', '')
+                o = c.get('overview', '') or ''
+                g_str = ' '.join(c.get('genres', []))
+                live_texts.append(f"{t} {g_str} {o}".strip())
+
+            # TF-IDF vectors
+            if hasattr(self.matrix_builder, 'tfidf_vectorizer') and self.matrix_builder.tfidf_vectorizer is not None:
+                try:
+                    live_tfidf_matrix = self.matrix_builder.tfidf_vectorizer.transform(live_texts)
+                    for idx, c in enumerate(live_candidates):
+                        c['tfidf_vector'] = live_tfidf_matrix[idx]
+                except Exception as e:
+                    print(f"[Warning] Failed to dynamically compute TF-IDF for live candidates: {e}", file=sys.stderr)
+
+            # 768-d MPNet Semantic embeddings
+            if hasattr(self.matrix_builder, 'semantic_model') and self.matrix_builder.semantic_model is not None:
+                try:
+                    live_embs = self.matrix_builder.semantic_model.encode(live_texts, normalize_embeddings=True)
+                    for idx, c in enumerate(live_candidates):
+                        c['semantic_embedding'] = live_embs[idx]
+                except Exception as e:
+                    print(f"[Warning] Failed to dynamically compute semantic embeddings for live candidates: {e}", file=sys.stderr)
 
         if resolved_ref and resolved_ref.get('idx') is not None and self.feature_matrix is not None and hasattr(self.feature_matrix, "semantic_embeddings"):
             ref_emb = self.feature_matrix.semantic_embeddings[resolved_ref['idx']].reshape(1, -1)
@@ -304,18 +357,20 @@ class MovieRecommender:
                     query_embedding = query_embedding / norm
             else:
                 query_embedding = ref_emb
-        
+
         stage1_ranked = self.ranker.rank_movies_stage1(
             candidate_movies, query_embedding, query_tfidf
         )
-        
+
         stage1_top = self.ranker.get_top_k(stage1_ranked, self.rec_config.get("stage1_candidates", 100))
-        
+        candidate_lookup = {c.get('id') or c.get('movie_id'): c for c in candidate_movies}
+
         final_ranked = self.ranker.rank_movies_stage2(
             stage1_top, user_profile, extracted_features, self.feature_matrix,
-            history_boost_factor=self.rec_config.get("history_boost_factor", 0.3)
+            history_boost_factor=self.rec_config.get("history_boost_factor", 0.3),
+            candidate_lookup=candidate_lookup
         )
-        
+
         final_ranked = self.diversity_filter.filter(final_ranked, self.feature_matrix)
         excluded_set = set(excluded_movie_ids) if excluded_movie_ids else set()
         if resolved_ref and resolved_ref.get('id'):
@@ -323,16 +378,30 @@ class MovieRecommender:
         if excluded_set:
             final_ranked = [m for m in final_ranked if m.movie_id not in excluded_set]
         top_movies = self.ranker.get_top_k(final_ranked, top_k)
-        
+
+        if not top_movies:
+            explanation = "No movies matched all criteria."
+            if natural_language:
+                explanation = f"No movies found matching '{natural_language}'. Try broadening your search or relaxing the release year / filters."
+            return {
+                'recommendations': [],
+                'explanation': explanation,
+                'user_profile': {
+                    'top_genres': getattr(user_profile, 'top_genres', [])[:5] if user_profile else [],
+                    'top_keywords': getattr(user_profile, 'top_keywords', [])[:10] if user_profile else [],
+                    'avg_rating': getattr(user_profile, 'avg_rating', 0.0) if user_profile else 0.0,
+                    'watch_count': getattr(user_profile, 'watch_count', 0) if user_profile else 0
+                }
+            }
+
         movie_dicts = []
         ranking_factors = []
-        candidate_lookup = {c.get('id') or c.get('movie_id'): c for c in candidate_movies}
         for rm in top_movies:
             meta = self.feature_matrix.movie_metadata.get(rm.movie_id, {}) if self.feature_matrix and hasattr(self.feature_matrix, "movie_metadata") else {}
             cand = candidate_lookup.get(rm.movie_id, {})
-            
+
             genres_list = rm.genres or cand.get('genres', []) or meta.get('genres', [])
-            
+
             # Genuine streaming platforms if available from real candidate data, otherwise empty list
             platforms = []
             if cand.get('streaming_platforms') and isinstance(cand.get('streaming_platforms'), list):
@@ -359,14 +428,14 @@ class MovieRecommender:
                 'original_language': cand.get('original_language') or meta.get('original_language', ''),
             })
             ranking_factors.append(rm.reasoning_factors)
-        
+
         watch_history_summary = self._summarize_watch_history(watch_history)
         user_query = natural_language if natural_language else (preferences.get('query', '') if preferences else '')
-        
+
         reasonings = await self._generate_reasonings(
             movie_dicts, user_profile, ranking_factors, user_query, watch_history_summary, extracted_features
         )
-        
+
         recommendations = []
         for i, (movie, reasoning) in enumerate(zip(movie_dicts, reasonings)):
             recommendations.append(RecommendationResult(
@@ -375,7 +444,7 @@ class MovieRecommender:
                 score=top_movies[i].score,
                 rank=i + 1
             ))
-        
+
         top_pick_verdict = None
         if movie_dicts:
             top_pick_verdict = await self._generate_top_pick_verdict(
@@ -585,7 +654,7 @@ class MovieRecommender:
                     tmdb_params = self.nl_extractor.build_tmdb_discover_params(
                         extracted_features, subscriptions, region, language
                     )
-                    
+
                     total_tmdb_candidates = 0
                     candidates = []
                     seen_ids = set()
@@ -596,48 +665,64 @@ class MovieRecommender:
                         page_params = tmdb_params.copy()
                         if page_num > 1:
                             page_params["page"] = page_num
-                            
+
                         page_movies = await client.discover_movies(**page_params)
                         if not page_movies:
                             break
-                            
+
                         total_tmdb_candidates += len(page_movies)
-                        
+
                         for m in page_movies:
                             if m.id in seen_ids:
                                 continue
                             seen_ids.add(m.id)
-                            
-                            # Strict SQLite membership filter: candidate MUST exist in movie_features.db
-                            if m.id not in sqlite_id_set:
-                                continue
-                                
-                            meta = sqlite_metadata.get(m.id, {})
-                            cand_dict = {
-                                'id': m.id,
-                                'title': meta.get('title') or m.title,
-                                'overview': meta.get('overview') or m.overview,
-                                'genres': meta.get('genres') or m.genres,
-                                'release_date': meta.get('release_date') or m.release_date,
-                                'vote_average': meta.get('vote_average') if meta.get('vote_average', 0) > 0 else m.vote_average,
-                                'vote_count': meta.get('vote_count') if meta.get('vote_count', 0) > 0 else m.vote_count,
-                                'popularity': m.popularity or meta.get('popularity', 0),
-                                'original_language': m.original_language or meta.get('original_language', 'en'),
-                                'poster_path': m.poster_path
-                            }
+
+                            is_local = m.id in sqlite_id_set
+                            if is_local:
+                                meta = sqlite_metadata.get(m.id, {})
+                                cand_dict = {
+                                    'id': m.id,
+                                    'title': meta.get('title') or m.title,
+                                    'overview': meta.get('overview') or m.overview,
+                                    'genres': meta.get('genres') or m.genres,
+                                    'release_date': meta.get('release_date') or m.release_date,
+                                    'vote_average': meta.get('vote_average') if meta.get('vote_average', 0) > 0 else m.vote_average,
+                                    'vote_count': meta.get('vote_count') if meta.get('vote_count', 0) > 0 else m.vote_count,
+                                    'popularity': m.popularity or meta.get('popularity', 0),
+                                    'original_language': m.original_language or meta.get('original_language', 'en'),
+                                    'poster_path': m.poster_path,
+                                    'is_local': True
+                                }
+                            else:
+                                cand_dict = {
+                                    'id': m.id,
+                                    'title': m.title,
+                                    'overview': m.overview,
+                                    'genres': m.genres,
+                                    'release_date': m.release_date,
+                                    'vote_average': m.vote_average,
+                                    'vote_count': m.vote_count,
+                                    'popularity': m.popularity,
+                                    'original_language': m.original_language,
+                                    'poster_path': m.poster_path,
+                                    'is_local': False
+                                }
+
                             if self._passes_all_hard_filters(cand_dict, extracted_features):
                                 candidates.append(cand_dict)
-                                
+
                         if len(candidates) >= self.rec_config.get("stage1_candidates", 50):
                             break
 
-                    matched_count = len(candidates)
-                    excluded_count = total_tmdb_candidates - matched_count
-                    coverage_pct = (matched_count / total_tmdb_candidates * 100.0) if total_tmdb_candidates > 0 else 0.0
+                    local_matched_count = sum(1 for c in candidates if c.get('is_local', True))
+                    live_matched_count = sum(1 for c in candidates if not c.get('is_local', True))
+                    total_matched = len(candidates)
+                    excluded_count = total_tmdb_candidates - total_matched
+                    coverage_pct = (local_matched_count / total_tmdb_candidates * 100.0) if total_tmdb_candidates > 0 else 0.0
                     print(
                         f"[Candidate Discovery] TMDB candidates: {total_tmdb_candidates} | "
-                        f"SQLite matches: {matched_count} | Excluded (out-of-database): {excluded_count} | "
-                        f"Coverage: {coverage_pct:.1f}%",
+                        f"SQLite matches: {local_matched_count} | Out-of-corpus (live): {live_matched_count} | "
+                        f"Excluded: {excluded_count} | Local Coverage: {coverage_pct:.1f}%",
                         file=sys.stderr
                     )
 
@@ -646,6 +731,7 @@ class MovieRecommender:
                         fallback_pool = self._get_local_candidates(extracted_features)
                         for fb in fallback_pool:
                             if fb['id'] not in seen_ids:
+                                fb['is_local'] = True
                                 candidates.append(fb)
                                 seen_ids.add(fb['id'])
                             if len(candidates) >= self.rec_config.get("stage1_candidates", 100):
@@ -796,7 +882,7 @@ class MovieRecommender:
 
         async with self.tmdb_client as client:
             candidates = []
-            
+
             for genre, weight in user_profile.top_genres[:5]:
                 movies = await client.discover_movies(
                     genre=genre,
@@ -821,7 +907,7 @@ class MovieRecommender:
                         'original_language': m.original_language,
                         'poster_path': m.poster_path
                     })
-            
+
             popular = await client.get_popular_movies(region=region, language=language, page=1)
             for m in popular[:50]:
                 candidates.append({
@@ -836,14 +922,14 @@ class MovieRecommender:
                     'original_language': m.original_language,
                     'poster_path': m.poster_path
                 })
-            
+
             seen = set()
             unique_candidates = []
             for c in candidates:
                 if c['id'] not in seen:
                     seen.add(c['id'])
                     unique_candidates.append(c)
-            
+
             return unique_candidates[:200]
 
     def _build_query_from_profile(
@@ -852,29 +938,29 @@ class MovieRecommender:
         preferences: Dict[str, Any] = None
     ) -> str:
         parts = []
-        
+
         for genre, _ in user_profile.top_genres[:5]:
             parts.append(genre)
-        
+
         for keyword, _ in user_profile.top_keywords[:10]:
             parts.append(keyword)
-        
+
         if preferences and preferences.get('query'):
             parts.append(preferences['query'])
-        
+
         if preferences and preferences.get('mood'):
             parts.append(preferences['mood'])
-        
+
         return ' '.join(parts)
 
     def _summarize_watch_history(self, watch_history: List[Dict[str, Any]]) -> str:
         if not watch_history:
             return "No watch history available"
-        
+
         total = len(watch_history)
         rated = sum(1 for e in watch_history if e.get('rating', 0) > 0)
         avg_rating = np.mean([e.get('rating', 0) for e in watch_history if e.get('rating', 0) > 0]) if rated > 0 else 0
-        
+
         return f"User has watched {total} movies, rated {rated} of them (avg {avg_rating:.1f}/10)"
 
     async def _generate_reasonings(
@@ -929,12 +1015,12 @@ class MovieRecommender:
     ) -> Dict[str, Any]:
         if not self._initialized:
             raise RuntimeError("Recommender not initialized. Call initialize() first.")
-        
+
         ratings = ratings or {}
         profile = self.preference_extractor.extract_preferences(
             watch_history, ratings, self.feature_matrix
         )
-        
+
         return {
             'top_genres': profile.top_genres,
             'top_keywords': profile.top_keywords,
@@ -950,7 +1036,7 @@ class MovieRecommender:
 
     async def get_movie_details(self, movie_id: int) -> Dict[str, Any]:
         await self.initialize()
-        
+
         meta = self.feature_matrix.movie_metadata.get(movie_id, {}) if self.feature_matrix else {}
         similar = []
         if self.feature_matrix and hasattr(self.feature_matrix, "semantic_embeddings"):
@@ -958,14 +1044,14 @@ class MovieRecommender:
                 idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
             else:
                 idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
-                
+
             if idx is not None:
                 sims = np.dot(self.feature_matrix.semantic_embeddings[idx], self.feature_matrix.semantic_embeddings.T)
                 top_indices = np.argsort(sims)[::-1][1:11]
                 for ti in top_indices:
                     sim_id = self.feature_matrix.idx_to_tmdb_id.get(ti, self.feature_matrix.movie_ids[ti])
                     similar.append((sim_id, float(sims[ti])))
-        
+
         if self.tmdb_client is not None:
             try:
                 async with self.tmdb_client as client:
@@ -989,7 +1075,7 @@ class MovieRecommender:
                     }
             except Exception as e:
                 print(f"TMDB details fetch failed ({e}), using local metadata", file=sys.stderr)
-        
+
         return {
             'id': movie_id,
             'title': meta.get('title', ''),
@@ -1012,13 +1098,13 @@ class MovieRecommender:
 async def main():
     recommender = MovieRecommender()
     await recommender.initialize()
-    
+
     sample_history = [
         {"movie_id": 550, "rating": 9.0},
         {"movie_id": 680, "rating": 8.5},
         {"movie_id": 13, "rating": 8.0},
     ]
-    
+
     result = await recommender.get_recommendations(
         user_id="test_user",
         watch_history=sample_history,
@@ -1027,7 +1113,7 @@ async def main():
         top_k=5,
         natural_language="I want a funny 90s space comedy with Tom Hanks"
     )
-    
+
     for rec in result['recommendations']:
         print(f"#{rec['rank']}: {rec['movie']['title']} - {rec['reasoning']}", file=sys.stderr)
 

@@ -342,5 +342,34 @@ class TestCleanupRegressions:
         source = inspect.getsource(MovieRecommender._get_candidate_movies_stage1)
         assert "'poster_path': m.poster_path" in source
 
+    def test_ui_adaptive_profile_blend_presentation(self):
+        """Verify UI displays 'Adaptive Profile Blend' terminology with explicit guidance:
+        1. Explanatory title 'Adaptive Profile Blend' and legend 'Query Focus' / 'Long-Term Profile'.
+        2. Help text / tooltip explaining ranking balance vs storage.
+        3. No misleading 'Permanent' or '7d Decay' wording that implies stored memory percentage.
+        4. Dynamic JavaScript template updates format with '% Query Focus / % Long-Term Profile'.
+        """
+        from pathlib import Path
+        html_path = Path("src/ui/static/index.html")
+        assert html_path.exists(), "src/ui/static/index.html does not exist"
+        content = html_path.read_text(encoding="utf-8")
 
+        # 1. Verify updated card title and legends
+        assert "Adaptive Profile Blend" in content
+        assert "Query Focus" in content
+        assert "Long-Term Profile" in content
 
+        # 2. Verify explicit explanatory help text & tooltip
+        expected_help_text = (
+            "Shows how recommendation ranking balances your current request against your accumulated taste profile. "
+            "It is not a measure of how much memory is stored."
+        )
+        assert expected_help_text in content
+
+        # 3. Verify misleading phrasing is removed
+        assert "Long-term (Permanent)" not in content
+        assert "Short-term (7d Decay)" not in content
+        assert "% Short / % Long" not in content
+
+        # 4. Verify JavaScript formatting
+        assert "${stats.short_term_pct}% Query Focus / ${stats.long_term_pct}% Long-Term Profile" in content

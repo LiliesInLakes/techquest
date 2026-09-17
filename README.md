@@ -416,26 +416,48 @@ Test suites include:
 |---|---|---|
 | **TMDB API** | No `TMDB_API_KEY` or network failure | Queries `movie_features.db` directly with SQL filters on hard constraints; sorts by `rating_count DESC, avg_rating DESC`. |
 | **LLM Provider** | No `KADO_API_KEY` or API error | `NLFeatureExtractor` falls back to regex parser (`confidence=0.5`); `DeepSeekReasoner` falls back to prioritized rule templates (`ReasoningTemplateEngine`). |
+| **Out-of-Corpus (2024+)** | Movies not indexed in local SQLite | Uses lightweight live ranking path: dynamically computes TF-IDF & 768-d MPNet embeddings strictly bounded by `MAX_DYNAMIC_LIVE_CANDIDATES` (200), without fabricating ratings or providers. |
 | **Release Year** | Missing in candidate metadata | Safely falls back to global log popularity without fabricating a release year. |
 | **Rating Count** | NULL or 0 votes | Safely assigns 0.0 popularity score deterministically. |
 | **User Profile** | Empty watch history | Zeroed profile; ranking is driven by query relevance, semantic match, and quality. |
 
 ---
 
-## 14. How to Extend It
+## 14. Out-of-Corpus Candidates & Dynamic Embedding Safety Bound
+
+### Problem
+The canonical SQLite database (`movie_features.db`, 87,425 movies) has temporal coverage through approximately 2023. When users query recent or future releases (e.g., *"horror movie of 2hrs and released after 2024"* or *"latest horror movie"*), TMDB discover returns valid 2024–2026 films, but they are absent from the offline SQLite database and precomputed embedding matrix.
+
+If all out-of-corpus candidates are discarded, valid temporal queries yield 0 recommendations. However, if out-of-corpus candidates are dynamically embedded without an upper bound, a broad query returning hundreds or thousands of TMDB results could invoke `SentenceTransformer.encode()` on an unbounded batch, leading to severe latency spikes and high memory allocation.
+
+### Solution & Guarantees
+1. **Dual Candidate Architecture**:
+   - **Local Candidates**: Present in SQLite; utilize precomputed 768-d MPNet embeddings and 5,000-d TF-IDF vectors from the 87,425-movie offline matrix.
+   - **Live TMDB Candidates**: Out-of-corpus movies passing all hard filters use TMDB metadata directly with dynamically computed embeddings.
+2. **Strict Dynamic Embedding Hard Cap (`MAX_DYNAMIC_LIVE_CANDIDATES = 200`)**:
+   - Configured via `config.yaml` (`recommendation.max_dynamic_live_candidates: 200`).
+   - Slicing to $\le 200$ candidates is strictly enforced **BEFORE** calling `SentenceTransformer.encode()` and `tfidf_vectorizer.transform()`.
+   - The encoder never allocates large temporary matrices ($200 \times 768 \times 4 \text{ bytes} \approx 614 \text{ KB}$ max memory footprint).
+   - Live candidates preserve TMDB's natural discovery ranking (popularity/vote average) when bounded.
+3. **Zero Fabrication**: Live candidates do not invent MovieLens ratings or fake streaming providers; neutral safe defaults are used for missing signals.
+
+---
+
+## 15. How to Extend It
 
 - **Adjust Ranking Weights:** Modify `config.yaml` (`imdb_weight`, `tfidf_weight`, `semantic_weight`, `popularity_weight`).
+- **Configure Live Embedding Cap:** Modify `max_dynamic_live_candidates` in `config.yaml` (default: `200`).
 - **Update Memory Decay:** Modify $\lambda$ in `src/memory/engine.py`.
 - **Add MCP Tools / A2A Capabilities:** Add handler methods in `mcp_server.py` and `a2a_protocol.py` delegating to `MovieRecommender`.
 
 ---
 
-## 15. Glossary & Limitations
+## 16. Glossary & Limitations
 
 - **Canonical Corpus:** 87,425 unique TMDB movies deduplicated from MovieLens 32M and TMDB in `movie_features.db`.
 - **Age-Relative Popularity:** Percentile ranking of $\log(1 + \text{votes})$ within release-year cohorts ($Y \pm 3$ / $Y \pm 5$), preventing classic movies with decades of accumulated votes from overwhelming modern films.
 - **Model-Derived Semantic Similarity:** Cosine similarity from `multi-qa-mpnet-base-dot-v1` (768-d), representing conceptual proximity rather than a literal percentage.
+- **Out-of-Corpus Handling:** 2024–2026 films outside the canonical SQLite corpus are supported via dynamic query-time embedding capped at 200 candidates per query.
 - **Known Limitations:**
-  - MovieLens dataset temporal coverage reaches ~2023; very recent 2024–2026 films exist in TMDB but will only be recommended if indexed in the canonical database.
-  - First-run model initialization requires loading the 768-d SentenceTransformer and embedding matrix (~2–3 seconds on CPU).
-  - External LLM API calls add 500–1500 ms latency per recommendation request (mitigated by asynchronous execution and template fallback).
+   - First-run model initialization requires loading the 768-d SentenceTransformer and embedding matrix (~2–3 seconds on CPU).
+   - External LLM API calls add 500–1500 ms latency per recommendation request (mitigated by asynchronous execution and template fallback).

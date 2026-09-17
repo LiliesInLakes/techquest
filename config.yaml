@@ -28,6 +28,7 @@ recommendation:
   max_same_director: 2
   recency_latest_window_years: 4
   recency_recent_window_years: 6
+  max_dynamic_live_candidates: 200
 
 data:
   db_path: "movie_features.db"

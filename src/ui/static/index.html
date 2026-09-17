@@ -62,10 +62,10 @@
           <input type="text" id="userIdInput" value="demo" class="bg-transparent text-xs font-semibold text-brand-400 w-28 focus:outline-none border-b border-transparent focus:border-brand-500" onchange="handleUserChange();" onblur="handleUserChange();" onkeydown="if(event.key === 'Enter') { this.blur(); }">
         </div>
 
-        <!-- MEMORY BALANCE BADGE -->
-        <div id="memoryBadge" class="hidden sm:flex items-center space-x-2 bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 text-xs">
-          <span class="text-slate-400">Memory Balance:</span>
-          <span id="memoryBalanceText" class="font-semibold text-emerald-400">70% Short / 30% Long</span>
+        <!-- ADAPTIVE PROFILE BLEND BADGE -->
+        <div id="memoryBadge" class="hidden sm:flex items-center space-x-2 bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 text-xs" title="Shows how recommendation ranking balances your current request against your accumulated taste profile. It is not a measure of how much memory is stored.">
+          <span class="text-slate-400">Adaptive Blend:</span>
+          <span id="memoryBalanceText" class="font-semibold text-emerald-400">70% Query Focus / 30% Long-Term Profile</span>
         </div>
       </div>
     </div>
@@ -181,19 +181,27 @@
       <!-- TAB 1: USER TASTE PROFILE PANEL -->
       <div id="profileTab" class="glass p-5 rounded-2xl space-y-5">
         
-        <!-- MEMORY BALANCE CARD -->
+        <!-- ADAPTIVE PROFILE BLEND CARD -->
         <div>
           <div class="flex items-center justify-between text-xs mb-1.5">
-            <span class="font-semibold text-slate-300">Memory Balance (&beta;)</span>
-            <span id="balanceRatio" class="text-brand-400 font-bold">70% Short / 30% Long</span>
+            <span class="font-semibold text-slate-300 flex items-center gap-1">
+              <span>Adaptive Profile Blend</span>
+              <span title="Shows how recommendation ranking balances your current request against your accumulated taste profile. It is not a measure of how much memory is stored." class="cursor-help text-slate-500 hover:text-slate-300">
+                <i class="fa-solid fa-circle-info text-[10px]"></i>
+              </span>
+            </span>
+            <span id="balanceRatio" class="text-brand-400 font-bold">70% Query Focus / 30% Long-Term Profile</span>
           </div>
           <div class="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden flex border border-slate-800">
             <div id="shortTermBar" class="bg-indigo-500 h-full transition-all duration-500" style="width: 70%"></div>
             <div id="longTermBar" class="bg-brand-500 h-full transition-all duration-500" style="width: 30%"></div>
           </div>
           <p class="text-[11px] text-slate-400 mt-1.5 flex justify-between">
-            <span><span class="inline-block w-2 h-2 rounded-full bg-indigo-500 mr-1"></span>Short-term (7d Decay)</span>
-            <span><span class="inline-block w-2 h-2 rounded-full bg-brand-500 mr-1"></span>Long-term (Permanent)</span>
+            <span><span class="inline-block w-2 h-2 rounded-full bg-indigo-500 mr-1"></span>Query Focus</span>
+            <span><span class="inline-block w-2 h-2 rounded-full bg-brand-500 mr-1"></span>Long-Term Profile</span>
+          </p>
+          <p class="text-[10px] text-slate-500 mt-1.5 italic">
+            Shows how recommendation ranking balances your current request against your accumulated taste profile. It is not a measure of how much memory is stored.
           </p>
         </div>
 
@@ -1010,9 +1018,9 @@
         }
         renderSubscriptionsList(window.currentUserSubscriptions);
 
-        // Update memory balance
-        document.getElementById('memoryBalanceText').innerText = `${stats.short_term_pct}% Short / ${stats.long_term_pct}% Long`;
-        document.getElementById('balanceRatio').innerText = `${stats.short_term_pct}% Short / ${stats.long_term_pct}% Long`;
+        // Update profile blend
+        document.getElementById('memoryBalanceText').innerText = `${stats.short_term_pct}% Query Focus / ${stats.long_term_pct}% Long-Term Profile`;
+        document.getElementById('balanceRatio').innerText = `${stats.short_term_pct}% Query Focus / ${stats.long_term_pct}% Long-Term Profile`;
         document.getElementById('shortTermBar').style.width = `${stats.short_term_pct}%`;
         document.getElementById('longTermBar').style.width = `${stats.long_term_pct}%`;
 

@@ -12,6 +12,14 @@ except ImportError:
 import yaml
 
 
+TMDB_GENRE_ID_TO_NAME = {
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+    27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance",
+    878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western"
+}
+
+
 @dataclass
 class Movie:
     id: int
@@ -390,15 +398,12 @@ class TMDBClient:
     def _parse_movie(self, data: Dict) -> Movie:
         genre_names = []
         if "genre_ids" in data:
-            # _parse_movie is sync but called from async context; never use
-            # asyncio.run() here (crashes inside a running loop). If the genre
-            # cache isn't populated yet, leave names empty — discover_movies()
-            # populates it via _get_genre_ids() before parsing.
             cache = getattr(self, "_genre_cache", None) or {}
-            genre_map = {v: k for k, v in cache.items()}
-            genre_names = [genre_map.get(gid, "") for gid in data.get("genre_ids", [])]
+            genre_map = {v: k.title() for k, v in cache.items()} if cache else TMDB_GENRE_ID_TO_NAME
+            genre_names = [genre_map.get(gid, TMDB_GENRE_ID_TO_NAME.get(gid, "")) for gid in data.get("genre_ids", [])]
+            genre_names = [g for g in genre_names if g]
         elif "genres" in data:
-            genre_names = [g["name"] for g in data.get("genres", [])]
+            genre_names = [g["name"] if isinstance(g, dict) and "name" in g else str(g) for g in data.get("genres", [])]
         
         return Movie(
             id=data["id"],
