@@ -229,6 +229,9 @@ class NLFeatureExtractor:
         ) if self._llm_available else None
 
         self.semantic_search = semantic_search
+        rec_config = self.config.get("recommendation", {}) if self.config else {}
+        self.latest_window_years = int(rec_config.get("recency_latest_window_years", 2))
+        self.recent_window_years = int(rec_config.get("recency_recent_window_years", 4))
 
     def _load_config(self, config_path: str) -> Dict:
         if yaml is None:
@@ -257,7 +260,7 @@ class NLFeatureExtractor:
                 temperature=0.3,
                 max_tokens=800
             )
-            
+
             content = response.choices[0].message.content
 
             # Reasoning models (e.g. DeepSeek-V4-Flash via Kado) may return an
@@ -316,7 +319,98 @@ class NLFeatureExtractor:
             pass
         return None
 
+    def _extract_temporal_constraints(self, text: str) -> tuple[Optional[int], Optional[int], List[str]]:
+        import datetime
+        text_lower = text.lower()
+        decades = []
+        year_min = None
+        year_max = None
+        current_year = datetime.date.today().year
+
+        # 1. Explicit year ranges (e.g., "from 1995 to 2005", "between 1990 and 2000", "1995-2005")
+        range_match = re.search(r'\b(?:from|between)\s+(19\d\d|20[0-2]\d)\s+(?:to|and|-)\s+(19\d\d|20[0-2]\d)\b', text_lower)
+        if not range_match:
+            range_match = re.search(r'\b(19\d\d|20[0-2]\d)\s*-\s*(19\d\d|20[0-2]\d)\b', text_lower)
+
+        if range_match:
+            y1, y2 = int(range_match.group(1)), int(range_match.group(2))
+            year_min = min(y1, y2)
+            year_max = max(y1, y2)
+        else:
+            # 2. Strict / Inclusive operators
+            after_match = re.search(r'\b(?:after|post)\s+(19\d\d|20[0-2]\d)\b', text_lower)
+            if after_match:
+                year_min = int(after_match.group(1)) + 1
+
+            since_match = re.search(r'\b(?:since|from)\s+(19\d\d|20[0-2]\d)\b', text_lower)
+            if not after_match and since_match:
+                year_min = int(since_match.group(1))
+
+            plus_match = re.search(r'\b(19\d\d|20[0-2]\d)\+\b', text_lower)
+            if not after_match and not since_match and plus_match:
+                year_min = int(plus_match.group(1))
+
+            before_match = re.search(r'\b(?:before|prior to|pre)\s+(19\d\d|20[0-2]\d)\b', text_lower)
+            if before_match:
+                year_max = int(before_match.group(1)) - 1
+
+            until_match = re.search(r'\b(?:until|through|up to)\s+(19\d\d|20[0-2]\d)\b', text_lower)
+            if not before_match and until_match:
+                year_max = int(until_match.group(1))
+
+            # Decades check: "90s", "80s", "1990s", "2000s"
+            decade_matches = re.findall(r'\b(19\d{2}|20[0-2]\d)s\b', text_lower)
+            if not decade_matches:
+                decade_matches = re.findall(r'\b([2-9]0)s\b', text_lower)
+                decade_matches = [f"19{m}" if int(m) >= 30 else f"20{m}" for m in decade_matches]
+
+            for d in decade_matches:
+                year = int(d)
+                base_dec = (year // 10) * 10
+                decades.append(f"{base_dec}s")
+                if year_min is None or base_dec < year_min:
+                    year_min = base_dec
+                if year_max is None or (base_dec + 9) > year_max:
+                    year_max = base_dec + 9
+
+            # Single explicit year (e.g. "2024 horror movie", "in 2024", "from 2024")
+            if year_min is None and year_max is None and not decades:
+                single_year_match = re.search(r'\b(19\d\d|20[0-2]\d)\b', text_lower)
+                if single_year_match:
+                    y = int(single_year_match.group(1))
+                    year_min = y
+                    year_max = y
+
+            # 3. Qualitative Recency terms (only if explicit years were not extracted)
+            if year_min is None and year_max is None and not decades:
+                if re.search(r'\bthis year\b', text_lower):
+                    year_min = current_year
+                    year_max = current_year
+                elif re.search(r'\blast year\b', text_lower):
+                    year_min = current_year - 1
+                    year_max = current_year - 1
+                elif re.search(r'\b(latest|newest)\b', text_lower):
+                    year_min = current_year - self.latest_window_years + 1
+                    year_max = current_year
+                elif re.search(r'\b(recent|recently released|recent releases|recently)\b', text_lower):
+                    year_min = current_year - self.recent_window_years + 1
+                    year_max = current_year
+                else:
+                    new_movie_match = re.search(
+                        r'\bnew\s+(?:horror|action|comedy|drama|sci-fi|scifi|science fiction|thriller|romance|fantasy|animation|mystery|crime|adventure|western|movie|film|cinema|release)s?\b',
+                        text_lower
+                    ) or re.search(r'\b(?:brand\s+new|brand-new)\s+(?:movie|film|release)s?\b', text_lower)
+                    if new_movie_match:
+                        year_min = current_year - self.latest_window_years + 1
+                        year_max = current_year
+
+        return year_min, year_max, list(dict.fromkeys(decades))
+
     def _get_system_prompt(self) -> str:
+        import datetime
+        current_year = datetime.date.today().year
+        latest_min = current_year - self.latest_window_years + 1
+        recent_min = current_year - self.recent_window_years + 1
         genres_str = ", ".join(self.TMDB_GENRES.keys())
         return f"""You are an expert movie preference parser for a recommendation system.
 Extract structured features from the user's natural language movie request.
@@ -357,9 +451,16 @@ RULES:
    - Always populate "loose_genres" with 1-3 related genres to fall back on if results are too narrow.
    - Example: For "mind-bending thriller", primary_genres: ["Thriller"], loose_genres: ["Science Fiction", "Mystery"].
 3. TEMPORAL PARSING:
+   - "latest" / "newest" -> release_year_min: {latest_min}, release_year_max: {current_year}
+   - "recent" / "recently released" -> release_year_min: {recent_min}, release_year_max: {current_year}
+   - "this year" -> release_year_min: {current_year}, release_year_max: {current_year}
+   - "last year" -> release_year_min: {current_year - 1}, release_year_max: {current_year - 1}
+   - "new" (when modifying movie/genre) -> release_year_min: {latest_min}, release_year_max: {current_year}
+   - "after YYYY" -> release_year_min: YYYY + 1 (strictly after)
+   - "before YYYY" -> release_year_max: YYYY - 1 (strictly before)
+   - "from YYYY to YYYY" -> release_year_min: YYYY, release_year_max: YYYY (inclusive)
    - "90s" / "nineties" -> decades: ["1990s"], release_year_min: 1990, release_year_max: 1999
    - "80s" -> decades: ["1980s"], release_year_min: 1980, release_year_max: 1989
-   - "recent" / "new" -> release_year_min: 2021, release_year_max: 2026
    - "classic" -> release_year_max: 1979
 4. RUNTIME PARSING:
    - "under 2 hours" / "less than 2h" -> max_runtime_minutes: 120
@@ -392,7 +493,7 @@ RULES:
             context_str += f"\nLanguage: {context['language']}"
         if context.get("watch_history_summary"):
             context_str += f"\nWatch history: {context['watch_history_summary']}"
-        
+
         return f"User request: \"{text}\"{context_str}\n\nExtract features as JSON:"
 
     def _parse_and_validate(self, parsed: Dict, original_text: str) -> ExtractedFeatures:
@@ -403,11 +504,11 @@ RULES:
 
         excluded_genres = self._validate_genres(parsed.get("excluded_genres") or parsed.get("exclude_genres", []))
         raw_keywords = parsed.get("tmdb_keywords") or parsed.get("keywords", [])
-        
+
         # Filter out accidental fabricated keywords matching mood concepts
         soft_mood_terms = {"mind control", "mind-bending", "mind bending", "cozy", "dark", "atmospheric", "feel good", "feel-good"}
         keywords = [k for k in raw_keywords if str(k).lower().strip() not in soft_mood_terms]
-        
+
         # Validate year bounds
         year_min = parsed.get("release_year_min")
         year_max = parsed.get("release_year_max")
@@ -415,12 +516,22 @@ RULES:
             year_min = int(year_min)
         else:
             year_min = None
-            
+
         if isinstance(year_max, (int, float)):
             year_max = int(year_max)
         else:
             year_max = None
-            
+
+        # Post-validate / refine temporal bounds using deterministic extractor
+        det_min, det_max, det_decades = self._extract_temporal_constraints(original_text)
+        if det_min is not None:
+            year_min = det_min
+        if det_max is not None:
+            year_max = det_max
+        decades = self._validate_decades(parsed.get("decades", []))
+        if det_decades and not decades:
+            decades = det_decades
+
         runtime_max = parsed.get("max_runtime_minutes")
         runtime_min = parsed.get("min_runtime_minutes")
         runtime_max = int(runtime_max) if isinstance(runtime_max, (int, float)) else None
@@ -454,38 +565,38 @@ RULES:
             confidence=max(0.0, min(1.0, float(parsed.get("confidence", 0.7)))),
             original_text=original_text
         )
-        
+
         if not features.semantic_search_query:
             features.semantic_search_query = self._build_query_text(features)
-        
+
         return features
 
     def _validate_genres(self, genres: List[str]) -> List[str]:
         valid = []
         canonical_map = {g.lower(): g for g in self.TMDB_GENRES}
-        
+
         for g in genres:
             if not isinstance(g, str):
                 continue
             cleaned = g.strip()
             if not cleaned:
                 continue
-            
+
             # 1. Exact canonical name match
             if cleaned in self.TMDB_GENRES:
                 valid.append(cleaned)
                 continue
-            
+
             # 2. Case-insensitive canonical match
             norm = cleaned.lower()
             if norm in canonical_map:
                 valid.append(canonical_map[norm])
                 continue
-            
+
             # 3. Normalized alias lookup (handling hyphens, spaces, underscores)
             alias_key = re.sub(r'[\s\-_]+', '-', norm).strip('-')
             alt_key = re.sub(r'[\s\-_]+', '', norm)
-            
+
             matched = self.GENRE_ALIASES.get(norm) or self.GENRE_ALIASES.get(alias_key) or self.GENRE_ALIASES.get(alt_key)
             if matched:
                 if isinstance(matched, list):
@@ -493,7 +604,7 @@ RULES:
                 else:
                     valid.append(matched)
                 continue
-                
+
             # 4. Fallback substring matching for compound phrases
             for c_norm, c_name in canonical_map.items():
                 if re.search(rf'\b{re.escape(c_norm)}\b', norm):
@@ -532,15 +643,14 @@ RULES:
             parts.extend(features.keywords[:5])
         elif features.tmdb_keywords:
             parts.extend(features.tmdb_keywords[:5])
-        if features.reference_movies:
-            parts.append(f"similar to {', '.join(features.reference_movies)}")
         return " ".join(parts).strip() if parts else features.original_text
 
     def _fallback_extraction(self, text: str, context: Dict[str, Any]) -> ExtractedFeatures:
+        import datetime
         text_lower = text.lower()
         primary_genres = []
         excluded_genres = []
-        
+
         genre_keywords = {
             "sci-fi": "Science Fiction", "scifi": "Science Fiction", "science fiction": "Science Fiction",
             "space": "Science Fiction", "action": "Action", "comedy": "Comedy", "funny": "Comedy",
@@ -554,7 +664,7 @@ RULES:
             "adventure": "Adventure", "family": "Family", "kids": "Family",
             "war": "War", "western": "Western", "history": "History"
         }
-        
+
         # Check negative patterns (e.g. "not horror", "no horror", "without gore")
         neg_patterns = re.findall(r'(?:no|not|without|avoid)\s+([a-z\-]+)', text_lower)
         for neg in neg_patterns:
@@ -567,37 +677,28 @@ RULES:
             if re.search(rf'\b{re.escape(kw)}\b', text_lower):
                 if genre not in excluded_genres and genre not in primary_genres:
                     primary_genres.append(genre)
-        
+
         primary_genres = primary_genres[:3]
         loose_genres = self._derive_loose_genres(primary_genres)
-        
-        # Parse decades & years
-        decades = []
-        year_min = None
-        year_max = None
-        
-        # Check explicit year ranges (e.g., "from 1995 to 2005", "between 1990 and 2000", "1995-2005")
-        range_match = re.search(r'\b(?:from|between)?\s*(19\d\d|20[0-2]\d)\s*(?:to|and|-)\s*(19\d\d|20[0-2]\d)\b', text_lower)
-        if range_match:
-            y1, y2 = int(range_match.group(1)), int(range_match.group(2))
-            year_min = min(y1, y2)
-            year_max = max(y1, y2)
-        else:
-            # Check "90s", "80s", "1990s", "2000s"
-            decade_matches = re.findall(r'\b(19\d{2}|20[0-2]\d)s\b', text_lower)
-            if not decade_matches:
-                decade_matches = re.findall(r'\b([2-9]0)s\b', text_lower)
-                decade_matches = [f"19{m}" if int(m) >= 30 else f"20{m}" for m in decade_matches]
-                
-            for d in decade_matches:
-                year = int(d)
-                base_dec = (year // 10) * 10
-                decades.append(f"{base_dec}s")
-                if year_min is None or base_dec < year_min:
-                    year_min = base_dec
-                if year_max is None or (base_dec + 9) > year_max:
-                    year_max = base_dec + 9
-        
+
+        # Reference movies (e.g., "like Inception", "similar to Sicario", "movies similar to Harry Potter")
+        reference_movies = []
+        ref_patterns = [
+            r'(?:movies?|films?|something)?\s*(?:similar to|like)\s+([A-Za-z0-9\s:\'-]+?)(?:$|,|\.|\s+after\s+\d{4}|\s+before\s+\d{4}|\s+from\s+\d{4}|\s+in\s+[a-z]+|\s+with\s+|\s+but\s+|\s+and\s+)',
+            r'(?:similar movies? to)\s+([A-Za-z0-9\s:\'-]+?)(?:$|,|\.|\s+after\s+\d{4}|\s+before\s+\d{4}|\s+from\s+\d{4}|\s+in\s+[a-z]+|\s+with\s+|\s+but\s+|\s+and\s+)'
+        ]
+        for pat in ref_patterns:
+            matches = re.findall(pat, text, re.IGNORECASE)
+            for r in matches:
+                cleaned_ref = r.strip().strip('"\'')
+                # Filter out stopwords or general non-title words
+                if cleaned_ref and len(cleaned_ref) > 2 and cleaned_ref.lower() not in {"that", "this", "it", "movie", "film", "movies", "films"}:
+                    if cleaned_ref not in reference_movies:
+                        reference_movies.append(cleaned_ref)
+
+        # Parse decades & years using shared single-source-of-truth extractor
+        year_min, year_max, decades = self._extract_temporal_constraints(text)
+
         # Runtime extraction
         max_runtime = None
         min_runtime = None
@@ -606,7 +707,7 @@ RULES:
             max_runtime = int(float(runtime_hr_match.group(1)) * 60)
         elif "quick watch" in text_lower or "short movie" in text_lower:
             max_runtime = 95
-            
+
         runtime_min_match = re.search(r'(?:under|less than)\s+(\d+)\s*(?:mins?|minutes?)', text_lower)
         if runtime_min_match:
             max_runtime = int(runtime_min_match.group(1))
@@ -622,14 +723,6 @@ RULES:
             if lang_name in text_lower:
                 original_language = code
                 break
-
-        # Reference movies (e.g., "like Inception", "similar to Sicario")
-        reference_movies = []
-        ref_match = re.findall(r'(?:like|similar to)\s+([A-Z][A-Za-z0-9\s]+?)(?:$|,|\.|\s+but|\s+and|\s+with)', text)
-        for r in ref_match:
-            cleaned_ref = r.strip()
-            if cleaned_ref and len(cleaned_ref) > 2:
-                reference_movies.append(cleaned_ref)
 
         # Mood extraction
         mood = None
@@ -653,13 +746,14 @@ RULES:
             if re.search(pat, text_lower):
                 mood = m
                 break
-        
+
         # Keywords extraction
         stopwords = {
-            "i", "want", "to", "watch", "a", "an", "the", "movie", "film", 
+            "i", "want", "to", "watch", "a", "an", "the", "movie", "film",
             "with", "about", "like", "similar", "something", "good", "great",
             "recommend", "give", "me", "show", "movies", "films", "please",
-            "from", "under", "mins", "minutes", "hour", "hours", "but", "not", "without", "than"
+            "from", "under", "mins", "minutes", "hour", "hours", "but", "not", "without", "than",
+            "latest", "newest", "recent", "recently", "released", "releases", "new", "this", "last", "year"
         }
         mood_and_genre_tokens = {
             "sci", "fi", "scifi", "mind", "bending", "dark", "funny", "scary",
@@ -667,15 +761,30 @@ RULES:
             "action", "comedy", "drama", "horror", "thriller", "romance", "fantasy",
             "animation", "documentary", "mystery", "crime", "adventure", "family", "war", "western"
         }
+
+        # Collect tokens from reference movie titles so they don't pollute keywords
+        ref_tokens = set()
+        for ref in reference_movies:
+            for token in re.findall(r'\b[a-z]{3,}\b', ref.lower()):
+                ref_tokens.add(token)
+
         words = [
             w for w in re.findall(r'\b[a-z]{3,}\b', text_lower)
-            if w not in stopwords and w not in mood_and_genre_tokens
+            if w not in stopwords and w not in mood_and_genre_tokens and w not in ref_tokens
         ]
         keywords = words[:15]
-        
-        # Actors / Directors simple capital word heuristic
+
+        # Actors / Directors capital word heuristic (strictly excluding reference movie title tokens)
         potential_names = re.findall(r'\b([A-Z][a-z]+ [A-Z][a-z]+)\b', text)
-        actors = [name for name in potential_names if name not in reference_movies][:3]
+        ref_joined_lower = " ".join(reference_movies).lower()
+        actors = []
+        for name in potential_names:
+            name_lower = name.lower()
+            if name_lower in ref_joined_lower or any(part in ref_joined_lower.split() for part in name_lower.split()):
+                continue
+            if name not in reference_movies and name not in actors:
+                actors.append(name)
+        actors = actors[:3]
 
         theme_or_plot = " ".join([w for w in words if w not in genre_keywords])
         if mood:
@@ -865,7 +974,7 @@ RULES:
     def map_to_vocabulary(self, features: ExtractedFeatures, vocab: Set[str]) -> ExtractedFeatures:
         if not self.semantic_search:
             return features
-        
+
         mapped_keywords = []
         for kw in features.keywords:
             if kw.lower() in vocab:
@@ -878,7 +987,7 @@ RULES:
                         break
                 else:
                     mapped_keywords.append(kw.lower())
-        
+
         features.keywords = list(set(mapped_keywords))[:20]
         features.tmdb_keywords = list(features.keywords)
         return features
@@ -887,7 +996,7 @@ RULES:
 async def main():
     try:
         extractor = NLFeatureExtractor()
-        
+
         test_queries = [
             "I want a funny 90s space comedy with Tom Hanks under 2 hours",
             "Dark gritty thriller like Sicario but not too violent and no horror",
@@ -895,7 +1004,7 @@ async def main():
             "Mind-bending sci-fi with time travel, highly rated",
             "Action movie with Tom Cruise, not Mission Impossible"
         ]
-        
+
         for query in test_queries:
             print(f"\n==========================================", file=sys.stderr)
             print(f"Query: {query}", file=sys.stderr)
@@ -910,10 +1019,10 @@ async def main():
             print(f"  Theme:          {features.theme_or_plot}", file=sys.stderr)
             print(f"  References:     {features.reference_movies}", file=sys.stderr)
             print(f"  Semantic Query: {features.semantic_search_query}", file=sys.stderr)
-            
+
             discover_params = extractor.build_tmdb_discover_params(features)
             print(f"  TMDB Params:    {discover_params}", file=sys.stderr)
-            
+
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
 

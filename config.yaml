@@ -26,6 +26,8 @@ recommendation:
   history_boost_factor: 0.3
   max_same_genre: 3
   max_same_director: 2
+  recency_latest_window_years: 4
+  recency_recent_window_years: 6
 
 data:
   db_path: "movie_features.db"

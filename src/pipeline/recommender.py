@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import re
 import json
 from typing import List, Dict, Any, Optional, Tuple, Set
 from dataclasses import dataclass
@@ -269,8 +270,15 @@ class MovieRecommender:
                 vocab = set(self.feature_matrix.feature_names)
                 extracted_features = self.nl_extractor.map_to_vocabulary(extracted_features, vocab)
         
+        resolved_ref = None
+        if extracted_features and extracted_features.reference_movies:
+            for ref_name in extracted_features.reference_movies:
+                resolved_ref = await self._resolve_reference_movie(ref_name)
+                if resolved_ref:
+                    break
+
         candidate_movies = await self._get_candidate_movies_stage1(
-            extracted_features, subscriptions, region, language, user_profile
+            extracted_features, subscriptions, region, language, user_profile, resolved_ref=resolved_ref
         )
         
         if not candidate_movies:
@@ -286,6 +294,16 @@ class MovieRecommender:
         
         query_text = extracted_features.query_text if extracted_features else self._build_query_from_profile(user_profile, preferences)
         query_count, query_tfidf, query_embedding = self.matrix_builder.transform_query(query_text)
+
+        if resolved_ref and resolved_ref.get('idx') is not None and self.feature_matrix is not None and hasattr(self.feature_matrix, "semantic_embeddings"):
+            ref_emb = self.feature_matrix.semantic_embeddings[resolved_ref['idx']].reshape(1, -1)
+            if query_text and any(w in query_text.lower() for w in ["dark", "funny", "scary", "thriller", "action", "horror", "sci-fi", "space", "animation"]):
+                query_embedding = 0.75 * ref_emb + 0.25 * query_embedding
+                norm = np.linalg.norm(query_embedding)
+                if norm > 0:
+                    query_embedding = query_embedding / norm
+            else:
+                query_embedding = ref_emb
         
         stage1_ranked = self.ranker.rank_movies_stage1(
             candidate_movies, query_embedding, query_tfidf
@@ -299,8 +317,10 @@ class MovieRecommender:
         )
         
         final_ranked = self.diversity_filter.filter(final_ranked, self.feature_matrix)
-        if excluded_movie_ids:
-            excluded_set = set(excluded_movie_ids)
+        excluded_set = set(excluded_movie_ids) if excluded_movie_ids else set()
+        if resolved_ref and resolved_ref.get('id'):
+            excluded_set.add(resolved_ref['id'])
+        if excluded_set:
             final_ranked = [m for m in final_ranked if m.movie_id not in excluded_set]
         top_movies = self.ranker.get_top_k(final_ranked, top_k)
         
@@ -431,19 +451,131 @@ class MovieRecommender:
             return rec_item
         return None
 
+    async def _resolve_reference_movie(self, title: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolves a reference movie title against canonical SQLite database or TMDB search.
+        Resolution policy:
+        1. Exact match (case-insensitive).
+        2. Normalized title match (removing trailing/leading articles, release years, and punctuation).
+        3. Franchise/Prefix match with popularity disambiguation (e.g. 'Harry Potter' -> highest popularity canonical entry).
+        4. TMDB live search fallback.
+        """
+        if not title or not self.feature_matrix or not hasattr(self.feature_matrix, "movie_metadata"):
+            return None
+
+        title_clean = title.strip().lower()
+        metadata = self.feature_matrix.movie_metadata
+
+        # 1. Exact title match
+        for mid, meta in metadata.items():
+            t = (meta.get('title') or '').strip().lower()
+            if t == title_clean:
+                idx = self.feature_matrix.tmdb_id_to_idx.get(mid)
+                return {'id': mid, 'title': meta.get('title'), 'meta': meta, 'idx': idx}
+
+        # 2. Normalized title match
+        def normalize_title(t_str: str) -> str:
+            t_str = re.sub(r'\s*\([^)]*\)', '', t_str)  # remove parenthesized years or alternate titles
+            t_str = t_str.lower().strip()
+            if t_str.endswith(', the'):
+                t_str = 'the ' + t_str[:-5].strip()
+            elif t_str.endswith(', a'):
+                t_str = 'a ' + t_str[:-3].strip()
+            t_str = re.sub(r'[^a-z0-9\s]', ' ', t_str)
+            return ' '.join(t_str.split())
+
+        norm_target = normalize_title(title)
+        for mid, meta in metadata.items():
+            norm_db = normalize_title(meta.get('title') or '')
+            if norm_db == norm_target:
+                idx = self.feature_matrix.tmdb_id_to_idx.get(mid)
+                return {'id': mid, 'title': meta.get('title'), 'meta': meta, 'idx': idx}
+
+        # 3. Franchise / Prefix match with popularity disambiguation
+        prefix_matches = []
+        for mid, meta in metadata.items():
+            norm_db = normalize_title(meta.get('title') or '')
+            if norm_db.startswith(norm_target) or (norm_target in norm_db and len(norm_target) >= 5):
+                idx = self.feature_matrix.tmdb_id_to_idx.get(mid)
+                if idx is not None:
+                    prefix_matches.append({
+                        'id': mid,
+                        'title': meta.get('title'),
+                        'meta': meta,
+                        'idx': idx,
+                        'vote_count': meta.get('vote_count', 0),
+                        'popularity': meta.get('popularity', 0.0)
+                    })
+        if prefix_matches:
+            prefix_matches.sort(key=lambda x: (x['vote_count'], x['popularity']), reverse=True)
+            best = prefix_matches[0]
+            return {'id': best['id'], 'title': best['title'], 'meta': best['meta'], 'idx': best['idx']}
+
+        # 4. TMDB title search fallback
+        if self.tmdb_client is not None:
+            try:
+                async with self.tmdb_client as client:
+                    results = await client.search_movies(title, page=1)
+                    for m in results:
+                        if m.id in self.feature_matrix.tmdb_id_to_idx:
+                            idx = self.feature_matrix.tmdb_id_to_idx[m.id]
+                            meta = metadata.get(m.id, {})
+                            return {'id': m.id, 'title': meta.get('title') or m.title, 'meta': meta, 'idx': idx}
+            except Exception:
+                pass
+
+        return None
+
     async def _get_candidate_movies_stage1(
         self,
         extracted_features: Optional[ExtractedFeatures],
         subscriptions: List[str],
         region: str,
         language: str,
-        user_profile: UserPreferenceProfile
+        user_profile: UserPreferenceProfile,
+        resolved_ref: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        # Stage 1: TMDB discovers live candidate IDs matching hard constraints.
-        # SQLite verifies membership against the authoritative movie_features.db corpus.
-        # Candidates absent from SQLite are strictly excluded before ranking.
+        # Stage 1: Candidate discovery.
+        # If a reference movie is resolved, similarity candidates are derived directly from the reference
+        # movie's precomputed 768-d semantic embedding, filtered by hard constraints, and excluding the reference movie itself.
         sqlite_metadata = self.feature_matrix.movie_metadata if self.feature_matrix else {}
         sqlite_id_set = set(self.feature_matrix.tmdb_id_to_idx.keys()) if (self.feature_matrix and hasattr(self.feature_matrix, "tmdb_id_to_idx")) else set(sqlite_metadata.keys())
+
+        if resolved_ref and resolved_ref.get('idx') is not None and self.feature_matrix is not None and hasattr(self.feature_matrix, "semantic_embeddings"):
+            ref_id = resolved_ref['id']
+            ref_idx = resolved_ref['idx']
+            ref_emb = self.feature_matrix.semantic_embeddings[ref_idx]
+
+            sims = np.dot(ref_emb, self.feature_matrix.semantic_embeddings.T)
+            top_indices = np.argsort(sims)[::-1]
+
+            candidates = []
+            seen_ids = {ref_id}
+
+            for ti in top_indices:
+                cand_id = self.feature_matrix.idx_to_tmdb_id.get(ti, self.feature_matrix.movie_ids[ti])
+                if cand_id in seen_ids:
+                    continue
+                seen_ids.add(cand_id)
+                meta = sqlite_metadata.get(cand_id, {})
+                movie = {
+                    'id': cand_id,
+                    'title': meta.get('title', ''),
+                    'overview': meta.get('overview', ''),
+                    'genres': meta.get('genres', []),
+                    'release_date': meta.get('release_date', ''),
+                    'vote_average': meta.get('vote_average', 0.0),
+                    'vote_count': meta.get('vote_count', 0),
+                    'popularity': meta.get('popularity', 0),
+                    'original_language': meta.get('original_language', 'en'),
+                    'poster_path': meta.get('poster_path') or None
+                }
+                if self._passes_all_hard_filters(movie, extracted_features):
+                    candidates.append(movie)
+                    if len(candidates) >= self.rec_config.get("stage1_candidates", 100):
+                        break
+
+            return candidates
 
         if extracted_features:
             if self.tmdb_client is None:
@@ -480,20 +612,21 @@ class MovieRecommender:
                             if m.id not in sqlite_id_set:
                                 continue
                                 
-                            if self._passes_exclusions(m, extracted_features):
-                                meta = sqlite_metadata.get(m.id, {})
-                                candidates.append({
-                                    'id': m.id,
-                                    'title': meta.get('title') or m.title,
-                                    'overview': meta.get('overview') or m.overview,
-                                    'genres': meta.get('genres') or m.genres,
-                                    'release_date': meta.get('release_date') or m.release_date,
-                                    'vote_average': meta.get('vote_average') if meta.get('vote_average', 0) > 0 else m.vote_average,
-                                    'vote_count': meta.get('vote_count') if meta.get('vote_count', 0) > 0 else m.vote_count,
-                                    'popularity': m.popularity or meta.get('popularity', 0),
-                                    'original_language': m.original_language or meta.get('original_language', 'en'),
-                                    'poster_path': m.poster_path
-                                })
+                            meta = sqlite_metadata.get(m.id, {})
+                            cand_dict = {
+                                'id': m.id,
+                                'title': meta.get('title') or m.title,
+                                'overview': meta.get('overview') or m.overview,
+                                'genres': meta.get('genres') or m.genres,
+                                'release_date': meta.get('release_date') or m.release_date,
+                                'vote_average': meta.get('vote_average') if meta.get('vote_average', 0) > 0 else m.vote_average,
+                                'vote_count': meta.get('vote_count') if meta.get('vote_count', 0) > 0 else m.vote_count,
+                                'popularity': m.popularity or meta.get('popularity', 0),
+                                'original_language': m.original_language or meta.get('original_language', 'en'),
+                                'poster_path': m.poster_path
+                            }
+                            if self._passes_all_hard_filters(cand_dict, extracted_features):
+                                candidates.append(cand_dict)
                                 
                         if len(candidates) >= self.rec_config.get("stage1_candidates", 50):
                             break
@@ -560,41 +693,66 @@ class MovieRecommender:
         candidates.sort(key=lambda c: (c.get('vote_count', 0), c.get('vote_average', 0)), reverse=True)
         return candidates
 
-    def _passes_all_hard_filters(self, movie: Dict[str, Any], extracted_features: Optional[ExtractedFeatures]) -> bool:
+    @staticmethod
+    def _normalize_genre_name(g: str) -> str:
+        g_low = str(g).lower().strip()
+        if g_low in {"sci-fi", "scifi", "science fiction", "science-fiction"}:
+            return "science fiction"
+        if g_low in {"children", "kids", "family"}:
+            return "family"
+        if g_low in {"animated", "anime", "cartoon", "animation"}:
+            return "animation"
+        if g_low in {"romcom", "rom-com", "romantic comedy"}:
+            return "comedy"
+        return g_low
+
+    def _passes_all_hard_filters(self, movie: Any, extracted_features: Optional[ExtractedFeatures]) -> bool:
         if not extracted_features:
             return True
 
         if not self._passes_exclusions(movie, extracted_features):
             return False
 
-        genres = [g.lower() for g in movie.get('genres', [])]
+        if isinstance(movie, dict):
+            genres = movie.get('genres', [])
+            release_date = movie.get('release_date', '')
+            original_language = movie.get('original_language', 'en')
+            vote_average = movie.get('vote_average', 0.0)
+        else:
+            genres = getattr(movie, 'genres', [])
+            release_date = getattr(movie, 'release_date', '')
+            original_language = getattr(movie, 'original_language', 'en')
+            vote_average = getattr(movie, 'vote_average', 0.0)
 
         # Explicit genres hard constraint (if explicitly requested, movie must match)
         if extracted_features.explicit_genres:
-            req_genres = [g.lower() for g in extracted_features.explicit_genres]
-            if not any(g in genres for g in req_genres):
+            req_genres = {self._normalize_genre_name(g) for g in extracted_features.explicit_genres}
+            movie_genres = {self._normalize_genre_name(g) for g in genres}
+            if not req_genres.intersection(movie_genres):
                 return False
 
         # Release year constraints
-        release_date = movie.get('release_date', '')
-        if release_date and len(release_date) >= 4:
+        if release_date and len(str(release_date)) >= 4:
             try:
-                year = int(release_date[:4])
+                year = int(str(release_date)[:4])
                 if extracted_features.release_year_min and year < extracted_features.release_year_min:
                     return False
                 if extracted_features.release_year_max and year > extracted_features.release_year_max:
                     return False
             except ValueError:
                 pass
+        elif extracted_features.release_year_min:
+            # If movie has no valid release date and a minimum year is required, exclude it
+            return False
 
         # Language constraint
         if extracted_features.original_language and extracted_features.original_language != "en":
-            if movie.get('original_language') != extracted_features.original_language:
+            if original_language != extracted_features.original_language:
                 return False
 
         # Explicit min rating (only if explicitly extracted/requested by user)
         if extracted_features.min_rating and extracted_features.min_rating > 0.0:
-            if movie.get('vote_average', 0.0) < extracted_features.min_rating:
+            if vote_average < extracted_features.min_rating:
                 return False
 
         return True
@@ -610,9 +768,9 @@ class MovieRecommender:
             genres = movie.genres
             overview = movie.overview
 
-        movie_genres_lower = [g.lower() for g in genres]
+        movie_genres_norm = {self._normalize_genre_name(g) for g in genres}
         for excl in extracted_features.exclude_genres:
-            if excl.lower() in movie_genres_lower:
+            if self._normalize_genre_name(excl) in movie_genres_norm:
                 return False
 
         if isinstance(overview, str):

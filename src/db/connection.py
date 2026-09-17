@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import sqlite3
 import hashlib
@@ -173,15 +174,20 @@ class MovieDatabase:
                     parts.append(f"Tags: {', '.join(tags_list[:15])}.")
                 content_text = ' '.join(parts).strip()
 
+            title_str = r['title'] or ''
+            year_match = re.search(r'\((\d{4})\)', title_str)
+            release_date = f"{year_match.group(1)}-01-01" if year_match else ''
+
             canonical_movies.append({
                 'movielens_id': r['movielens_id'],
                 'tmdb_id': tmdb_id,
                 'id': tmdb_id,
-                'title': r['title'] or '',
+                'title': title_str,
                 'genres': genres_list,
                 'keywords': keywords_list,
                 'tags': tags_list,
                 'overview': r['overview'] or '',
+                'release_date': release_date,
                 'avg_rating': avg_rating,
                 'rating_count': rating_count,
                 'vote_average': vote_average,
