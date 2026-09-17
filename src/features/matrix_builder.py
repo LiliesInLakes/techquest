@@ -1,41 +1,53 @@
 import sys
 import os
+import math
+import json
+import hashlib
 import pickle
-import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass
+import torch
+from typing import Dict, List, Tuple, Optional, Any
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+import scipy.sparse as sp
 from sentence_transformers import SentenceTransformer
 import yaml
+
+from src.db.connection import MovieDatabase
 
 
 @dataclass
 class FeatureMatrix:
     movie_ids: List[int]
     movie_titles: List[str]
-    count_matrix: np.ndarray
-    tfidf_matrix: np.ndarray
+    count_matrix: Any
+    tfidf_matrix: Any
     semantic_embeddings: np.ndarray
     feature_names: List[str]
     tfidf_feature_names: List[str]
     movie_metadata: Dict[int, Dict]
+    tmdb_id_to_idx: Dict[int, int] = field(default_factory=dict)
+    idx_to_tmdb_id: Dict[int, int] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.tmdb_id_to_idx and self.movie_ids:
+            self.tmdb_id_to_idx = {mid: i for i, mid in enumerate(self.movie_ids)}
+            self.idx_to_tmdb_id = {i: mid for i, mid in enumerate(self.movie_ids)}
 
 
 class FeatureMatrixBuilder:
     def __init__(self, config_path: str = "config.yaml"):
+        self.config_path = config_path
         self.config = self._load_config(config_path)
         self.data_config = self.config.get("data", {})
-        self.tmdb_5000_path = self.data_config.get("tmdb_5000_path", "data/tmdb_5000_movies.csv")
-        self.tmdb_5000_credits_path = self.data_config.get("tmdb_5000_credits_path", "data/tmdb_5000_credits.csv")
-        self.movielens_tags_path = self.data_config.get("movielens_tags_path", "data/genome-tags.csv")
-        self.movielens_relevance_path = self.data_config.get("movielens_relevance_path", "data/genome-scores.csv")
+        self.db_path = self.data_config.get("db_path", "movie_features.db")
         
         self.output_dir = Path("data/processed")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_dir = self.output_dir / "checkpoints"
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
         self.count_vectorizer = CountVectorizer(
             max_features=5000,
@@ -53,7 +65,45 @@ class FeatureMatrixBuilder:
             max_df=0.95
         )
         
-        self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.semantic_model_name = self.config.get("recommendation", {}).get(
+            "semantic_model_name", "multi-qa-mpnet-base-dot-v1"
+        )
+        self._semantic_model = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def print_device_banner(self):
+        import sentence_transformers
+        print("=" * 65, file=sys.stderr)
+        print(f" PRECOMPUTE ENVIRONMENT & DEVICE DIAGNOSTICS", file=sys.stderr)
+        print("=" * 65, file=sys.stderr)
+        print(f" PyTorch Version           : {torch.__version__}", file=sys.stderr)
+        print(f" SentenceTransformers Ver : {sentence_transformers.__version__}", file=sys.stderr)
+        print(f" Target Model              : {self.semantic_model_name} (768-d)", file=sys.stderr)
+        print(f" Execution Device          : {self.device.upper()}", file=sys.stderr)
+        if self.device == "cuda":
+            gpu_name = torch.cuda.get_device_name(0)
+            vram_bytes = torch.cuda.get_device_properties(0).total_memory
+            vram_gb = vram_bytes / (1024 ** 3)
+            print(f" GPU Model                 : {gpu_name}", file=sys.stderr)
+            print(f" GPU VRAM                  : {vram_gb:.2f} GB", file=sys.stderr)
+        else:
+            import multiprocessing
+            print(f" CPU Cores / Threads       : {multiprocessing.cpu_count()} cores, {torch.get_num_threads()} threads", file=sys.stderr)
+        print("=" * 65, file=sys.stderr)
+
+    @property
+    def semantic_model(self) -> SentenceTransformer:
+        if self._semantic_model is None:
+            if self.device == "cpu":
+                import multiprocessing
+                try:
+                    torch.set_num_threads(multiprocessing.cpu_count())
+                except Exception:
+                    pass
+            self.print_device_banner()
+            self._semantic_model = SentenceTransformer(self.semantic_model_name, device=self.device)
+            self._semantic_model.max_seq_length = 128
+        return self._semantic_model
 
     def _load_config(self, config_path: str) -> Dict:
         try:
@@ -62,173 +112,163 @@ class FeatureMatrixBuilder:
         except FileNotFoundError:
             return {}
 
-    def load_tmdb_5000(self) -> pd.DataFrame:
-        movies_df = pd.read_csv(self.tmdb_5000_path)
-        credits_df = pd.read_csv(self.tmdb_5000_credits_path)
+    def load_canonical_dataset(self) -> List[Dict[str, Any]]:
+        """
+        Loads the authoritative canonical movie corpus from movie_features.db.
+        """
+        print(f"Loading canonical movie corpus from {self.db_path}...", file=sys.stderr)
+        db = MovieDatabase(db_path=self.db_path)
+        valid, msg = db.verify_integrity()
+        if not valid:
+            raise RuntimeError(f"Database integrity verification failed: {msg}")
+        return db.load_canonical_movies()
 
-        # credits CSV also has a 'title' column — drop it to avoid title_x/title_y
-        credits_df = credits_df.drop(columns=['title'], errors='ignore')
+    def _compute_dataset_hash(self, movie_ids: List[int]) -> str:
+        h = hashlib.sha256()
+        for mid in movie_ids:
+            h.update(str(mid).encode('utf-8'))
+        return h.hexdigest()
 
-        # credits CSV keys on 'movie_id', movies on 'id'
-        if 'movie_id' in credits_df.columns:
-            credits_df = credits_df.rename(columns={'movie_id': 'id'})
+    def build_semantic_embeddings_resumable(
+        self,
+        texts: List[str],
+        movie_ids: List[int],
+        batch_size: int = 2000,
+        encode_batch_size: Optional[int] = None
+    ) -> np.ndarray:
+        """
+        Builds semantic embeddings with batch-level checkpointing for fault-tolerance.
+        batch_size: Number of items per checkpoint chunk file (e.g. 2000).
+        encode_batch_size: Model inference mini-batch size (e.g. 128/256/512).
+        """
+        if encode_batch_size is None:
+            encode_batch_size = 256 if self.device == "cuda" else 128
 
-        movies_df = movies_df.merge(credits_df, on='id', how='left')
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        total_items = len(texts)
+        num_batches = math.ceil(total_items / batch_size)
         
-        movies_df['keywords'] = movies_df['keywords'].apply(self._parse_json_list)
-        movies_df['genres'] = movies_df['genres'].apply(self._parse_json_list)
-        movies_df['cast'] = movies_df['cast'].apply(self._parse_json_cast)
-        movies_df['crew'] = movies_df['crew'].apply(self._parse_json_crew)
+        dataset_hash = hashlib.sha256("".join(str(i) for i in movie_ids).encode()).hexdigest()
+        state_file = self.checkpoint_dir / "checkpoint_state.json"
         
-        movies_df['director'] = movies_df['crew'].apply(
-            lambda x: [c['name'] for c in x if c.get('job') == 'Director']
-        )
-        movies_df['top_cast'] = movies_df['cast'].apply(
-            lambda x: [c['name'] for c in x[:5]]
-        )
-        
-        return movies_df
+        completed_batches = {}
+        if state_file.exists():
+            try:
+                with open(state_file) as f:
+                    state = json.load(f)
+                if state.get("dataset_hash") == dataset_hash and state.get("model_name") == self.semantic_model_name:
+                    completed_batches = state.get("completed_batches", {})
+                    print(f"Resuming precompute from checkpoint: {len(completed_batches)}/{num_batches} batches already complete.", file=sys.stderr)
+                else:
+                    print("Previous checkpoint metadata mismatch. Starting fresh precompute...", file=sys.stderr)
+            except Exception as e:
+                print(f"Could not read checkpoint state ({e}), starting fresh...", file=sys.stderr)
 
-    def load_movielens_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        tags_df = pd.read_csv(self.movielens_tags_path)
-        relevance_df = pd.read_csv(self.movielens_relevance_path)
-        
-        # Ensure consistent types for merge
-        tags_df['tagId'] = tags_df['tagId'].astype(int)
-        relevance_df['tagId'] = relevance_df['tagId'].astype(int)
-        relevance_df['movieId'] = relevance_df['movieId'].astype(int)
-        
-        return tags_df, relevance_df
+        for b in range(num_batches):
+            b_str = str(b)
+            chk_path = self.checkpoint_dir / f"batch_{b}.npy"
+            
+            if b_str in completed_batches and chk_path.exists():
+                continue
+            
+            start_idx = b * batch_size
+            end_idx = min(start_idx + batch_size, total_items)
+            batch_texts = texts[start_idx:end_idx]
+            
+            print(f"Encoding batch {b+1}/{num_batches} (items {start_idx} to {end_idx}, encode_batch_size={encode_batch_size})...", file=sys.stderr)
+            with torch.inference_mode():
+                batch_embeddings = self.semantic_model.encode(
+                    batch_texts,
+                    batch_size=encode_batch_size,
+                    show_progress_bar=True,
+                    normalize_embeddings=True
+                ).astype(np.float32)
+            
+            np.save(chk_path, batch_embeddings)
+            completed_batches[b_str] = {
+                "batch_index": b,
+                "start_idx": start_idx,
+                "end_idx": end_idx,
+                "count": len(batch_texts)
+            }
+            
+            # Save updated checkpoint state atomically
+            temp_state = state_file.with_suffix(".json.tmp")
+            with open(temp_state, "w") as f:
+                json.dump({
+                    "dataset_hash": dataset_hash,
+                    "model_name": self.semantic_model_name,
+                    "total_items": total_items,
+                    "num_batches": num_batches,
+                    "completed_batches": completed_batches
+                }, f, indent=2)
+            temp_state.replace(state_file)
 
-    def _parse_json_list(self, val):
-        if pd.isna(val):
-            return []
-        try:
-            import json, ast
-            if isinstance(val, str):
-                val = val.strip()
-                if val.startswith('[') and val.endswith(']'):
-                    try:
-                        return [item['name'] for item in json.loads(val.replace("'", '"'))]
-                    except:
-                        try:
-                            parsed = ast.literal_eval(val)
-                            return [item['name'] for item in parsed if 'name' in item]
-                        except:
-                            return []
-            elif isinstance(val, list):
-                return [item['name'] for item in val if 'name' in item]
-            return []
-        except:
-            return []
-    
-    def _parse_json_crew(self, val):
-        if pd.isna(val):
-            return []
-        try:
-            import json, ast
-            if isinstance(val, str):
-                val = val.strip()
-                if val.startswith('[') and val.endswith(']'):
-                    try:
-                        return json.loads(val.replace("'", '"'))
-                    except:
-                        try:
-                            return ast.literal_eval(val)
-                        except:
-                            return []
-            elif isinstance(val, list):
-                return val
-            return []
-        except:
-            return []
-    
-    def _parse_json_cast(self, val):
-        if pd.isna(val):
-            return []
-        try:
-            import json, ast
-            if isinstance(val, str):
-                val = val.strip()
-                if val.startswith('[') and val.endswith(']'):
-                    try:
-                        return json.loads(val.replace("'", '"'))
-                    except:
-                        try:
-                            return ast.literal_eval(val)
-                        except:
-                            return []
-            elif isinstance(val, list):
-                return val
-            return []
-        except:
-            return []
+        # Concatenate all batches in order
+        print("Assembling complete embedding matrix from batch checkpoints...", file=sys.stderr)
+        all_embeddings = []
+        for b in range(num_batches):
+            chk_path = self.checkpoint_dir / f"batch_{b}.npy"
+            if not chk_path.exists():
+                raise RuntimeError(f"Missing checkpoint file: {chk_path}")
+            all_embeddings.append(np.load(chk_path))
+            
+        full_matrix = np.vstack(all_embeddings).astype(np.float32)
+        print(f"Full embedding matrix assembled with shape {full_matrix.shape}.", file=sys.stderr)
+        return full_matrix
 
-    def build_combined_text(self, movies_df: pd.DataFrame, tags_df: pd.DataFrame, relevance_df: pd.DataFrame) -> pd.DataFrame:
-        tmdb_id_to_movielens = self._create_id_mapping(movies_df)
-
-        # Top 20 tags per movie by relevance, then join tag names
-        top_relevance = (
-            relevance_df.sort_values('relevance', ascending=False)
-            .groupby('movieId', as_index=False)
-            .head(20)
-        )
-        merged = top_relevance.merge(tags_df, on='tagId', how='left')
-
-        tag_text_map = merged.groupby('movieId')['tag'].apply(lambda x: ' '.join(x.dropna())).to_dict()
+    def build_matrices(
+        self,
+        movies: List[Dict[str, Any]],
+        batch_size: int = 2000,
+        encode_batch_size: Optional[int] = None
+    ) -> FeatureMatrix:
+        texts = [m['content_text'] for m in movies]
+        movie_ids = [m['tmdb_id'] for m in movies]
+        movie_titles = [m['title'] for m in movies]
         
-        movies_df['movielens_tags'] = movies_df['id'].map(
-            lambda x: tag_text_map.get(tmdb_id_to_movielens.get(x, -1), '')
-        )
-        
-        movies_df['combined_features'] = (
-            movies_df['overview'].fillna('') + ' ' +
-            movies_df['keywords'].apply(lambda x: ' '.join(x)) + ' ' +
-            movies_df['genres'].apply(lambda x: ' '.join(x)) + ' ' +
-            movies_df['director'].apply(lambda x: ' '.join(x)) + ' ' +
-            movies_df['top_cast'].apply(lambda x: ' '.join(x)) + ' ' +
-            movies_df['movielens_tags'].fillna('')
-        )
-        
-        return movies_df
-
-    def _create_id_mapping(self, movies_df: pd.DataFrame) -> Dict[int, int]:
-        links_path = Path("data/links.csv")
-        if links_path.exists():
-            links_df = pd.read_csv(links_path)
-            return dict(zip(links_df['tmdbId'], links_df['movieId']))
-        return {}
-
-    def build_matrices(self, movies_df: pd.DataFrame) -> FeatureMatrix:
-        texts = movies_df['combined_features'].tolist()
-        movie_ids = movies_df['id'].tolist()
-        movie_titles = movies_df['title'].tolist()
-        
-        print("Building CountVectorizer matrix...", file=sys.stderr)
+        print("Building CountVectorizer matrix (5000 features)...", file=sys.stderr)
         count_matrix = self.count_vectorizer.fit_transform(texts)
         feature_names = self.count_vectorizer.get_feature_names_out().tolist()
         
-        print("Building TF-IDF matrix...", file=sys.stderr)
+        print("Building TF-IDF matrix (5000 features)...", file=sys.stderr)
         tfidf_matrix = self.tfidf_vectorizer.fit_transform(texts)
         tfidf_feature_names = self.tfidf_vectorizer.get_feature_names_out().tolist()
         
-        print("Building semantic embeddings...", file=sys.stderr)
-        semantic_embeddings = self.semantic_model.encode(texts, show_progress_bar=True, batch_size=32)
+        print(f"Building semantic embeddings using {self.semantic_model_name} (768-d)...", file=sys.stderr)
+        semantic_embeddings = self.build_semantic_embeddings_resumable(
+            texts=texts,
+            movie_ids=movie_ids,
+            batch_size=batch_size,
+            encode_batch_size=encode_batch_size
+        )
         
         movie_metadata = {}
-        for _, row in movies_df.iterrows():
-            movie_metadata[row['id']] = {
-                'title': row['title'],
-                'genres': row['genres'],
-                'keywords': row['keywords'],
-                'overview': row['overview'],
-                'vote_average': row.get('vote_average', 0),
-                'vote_count': row.get('vote_count', 0),
-                'popularity': row.get('popularity', 0),
-                'release_date': row.get('release_date', ''),
-                'director': row['director'],
-                'cast': row['top_cast'],
-                'movielens_tags': row.get('movielens_tags', '')
+        tmdb_id_to_idx = {}
+        idx_to_tmdb_id = {}
+        
+        for idx, m in enumerate(movies):
+            mid = m['tmdb_id']
+            tmdb_id_to_idx[mid] = idx
+            idx_to_tmdb_id[idx] = mid
+            movie_metadata[mid] = {
+                'id': mid,
+                'tmdb_id': mid,
+                'movielens_id': m.get('movielens_id'),
+                'title': m['title'],
+                'genres': m.get('genres', []),
+                'keywords': m.get('keywords', []),
+                'tags': m.get('tags', []),
+                'overview': m.get('overview', ''),
+                'vote_average': m.get('vote_average', 0.0),
+                'vote_count': m.get('vote_count', 0),
+                'avg_rating': m.get('avg_rating', 0.0),
+                'rating_count': m.get('rating_count', 0),
+                'director': m.get('director', []),
+                'cast': m.get('cast', []),
+                'release_date': m.get('release_date', ''),
+                'original_language': m.get('original_language', 'en'),
+                'content_text': m['content_text']
             }
         
         return FeatureMatrix(
@@ -239,84 +279,174 @@ class FeatureMatrixBuilder:
             semantic_embeddings=semantic_embeddings,
             feature_names=feature_names,
             tfidf_feature_names=tfidf_feature_names,
-            movie_metadata=movie_metadata
+            movie_metadata=movie_metadata,
+            tmdb_id_to_idx=tmdb_id_to_idx,
+            idx_to_tmdb_id=idx_to_tmdb_id
         )
 
-    def build_semantic_index(self, feature_matrix: FeatureMatrix) -> Dict:
-        similarity_matrix = cosine_similarity(feature_matrix.semantic_embeddings)
-        
-        semantic_index = {}
-        for i, movie_id in enumerate(feature_matrix.movie_ids):
-            similar_indices = np.argsort(similarity_matrix[i])[::-1][1:51]
-            semantic_index[movie_id] = [
-                (feature_matrix.movie_ids[idx], similarity_matrix[i][idx])
-                for idx in similar_indices
-            ]
-        
-        return semantic_index
-
-    def build_and_save(self) -> FeatureMatrix:
-        print("Loading TMDB 5000 dataset...", file=sys.stderr)
-        movies_df = self.load_tmdb_5000()
-        print(f"Loaded {len(movies_df)} movies from TMDB 5000", file=sys.stderr)
-        
-        print("Loading MovieLens data...", file=sys.stderr)
-        tags_df, relevance_df = self.load_movielens_data()
-        print(f"Loaded {len(tags_df)} tags and {len(relevance_df)} relevance scores", file=sys.stderr)
-        
-        print("Building combined features...", file=sys.stderr)
-        movies_df = self.build_combined_text(movies_df, tags_df, relevance_df)
-        
-        print("Building feature matrices...", file=sys.stderr)
-        feature_matrix = self.build_matrices(movies_df)
-        
-        print("Building semantic similarity index...", file=sys.stderr)
-        semantic_index = self.build_semantic_index(feature_matrix)
-        
-        print("Saving matrices...", file=sys.stderr)
-        self._save_feature_matrix(feature_matrix, semantic_index)
-        
-        print("Done!", file=sys.stderr)
+    def build_and_save(
+        self,
+        batch_size: int = 2000,
+        encode_batch_size: Optional[int] = None
+    ) -> FeatureMatrix:
+        movies = self.load_canonical_dataset()
+        feature_matrix = self.build_matrices(
+            movies=movies,
+            batch_size=batch_size,
+            encode_batch_size=encode_batch_size
+        )
+        self._save_feature_matrix(feature_matrix)
         return feature_matrix
 
-    def _save_feature_matrix(self, feature_matrix: FeatureMatrix, semantic_index: Dict):
-        with open(self.output_dir / "feature_matrix.pkl", "wb") as f:
-            pickle.dump(feature_matrix, f)
+    def _save_feature_matrix(self, feature_matrix: FeatureMatrix):
+        from datetime import datetime, timezone
+        print(f"Saving precomputed artifacts to {self.output_dir}...", file=sys.stderr)
         
-        with open(self.output_dir / "semantic_index.pkl", "wb") as f:
-            pickle.dump(semantic_index, f)
+        # 1. Save embeddings matrix as numpy file
+        emb_path = self.output_dir / "movie_embeddings.npy"
+        np.save(emb_path, feature_matrix.semantic_embeddings)
         
+        # 2. Save vectorizers
         with open(self.output_dir / "count_vectorizer.pkl", "wb") as f:
             pickle.dump(self.count_vectorizer, f)
         
         with open(self.output_dir / "tfidf_vectorizer.pkl", "wb") as f:
             pickle.dump(self.tfidf_vectorizer, f)
+            
+        # 3. Save persistent sparse matrices
+        sp.save_npz(self.output_dir / "count_matrix.npz", feature_matrix.count_matrix)
+        sp.save_npz(self.output_dir / "tfidf_matrix.npz", feature_matrix.tfidf_matrix)
         
-        print(f"Saved to {self.output_dir}", file=sys.stderr)
+        # 4. Save ID mapping
+        with open(self.output_dir / "movie_id_map.json", "w") as f:
+            json.dump({
+                "tmdb_id_to_idx": {str(k): v for k, v in feature_matrix.tmdb_id_to_idx.items()},
+                "movie_count": len(feature_matrix.movie_ids)
+            }, f)
+        
+        # 5. Save FeatureMatrix instance for backward compatibility
+        with open(self.output_dir / "feature_matrix.pkl", "wb") as f:
+            pickle.dump(feature_matrix, f)
+        
+        # 6. Write precompute manifest
+        manifest_path = self.output_dir / "precompute_manifest.json"
+        dataset_hash = self._compute_dataset_hash(feature_matrix.movie_ids)
+        
+        device_str = "cpu"
+        if torch.cuda.is_available():
+            device_str = f"cuda ({torch.cuda.get_device_name(0)})"
+
+        manifest_data = {
+            "model_name": self.semantic_model_name,
+            "embedding_dimension": int(feature_matrix.semantic_embeddings.shape[1]),
+            "canonical_movie_count": len(feature_matrix.movie_ids),
+            "movie_id_hash": dataset_hash,
+            "dataset_hash": dataset_hash,
+            "embedding_shape": list(feature_matrix.semantic_embeddings.shape),
+            "count_matrix_shape": list(feature_matrix.count_matrix.shape),
+            "tfidf_matrix_shape": list(feature_matrix.tfidf_matrix.shape),
+            "count_features": len(feature_matrix.feature_names),
+            "tfidf_features": len(feature_matrix.tfidf_feature_names),
+            "dtype": str(feature_matrix.semantic_embeddings.dtype),
+            "normalization_status": "L2-normalized",
+            "generation_device": device_str,
+            "generation_timestamp": datetime.now(timezone.utc).isoformat(),
+            "completed_status": "complete",
+            "preprocessing_settings": {
+                "max_seq_length": 128,
+                "count_max_features": 5000,
+                "tfidf_max_features": 5000,
+                "ngram_range": [1, 2],
+                "stop_words": "english"
+            }
+        }
+        
+        with open(manifest_path, "w") as f:
+            json.dump(manifest_data, f, indent=2)
+        
+        print(f"Precomputed feature matrix and artifacts saved successfully ({len(feature_matrix.movie_ids)} movies).", file=sys.stderr)
 
     @classmethod
-    def load(cls, config_path: str = "config.yaml") -> Tuple['FeatureMatrixBuilder', FeatureMatrix, Dict]:
+    def load(cls, config_path: str = "config.yaml") -> Tuple['FeatureMatrixBuilder', FeatureMatrix, Optional[Dict]]:
         builder = cls(config_path)
         output_dir = Path("data/processed")
         
-        with open(output_dir / "feature_matrix.pkl", "rb") as f:
-            feature_matrix = pickle.load(f)
+        emb_path = output_dir / "movie_embeddings.npy"
+        map_path = output_dir / "movie_id_map.json"
+        cv_path = output_dir / "count_vectorizer.pkl"
+        tv_path = output_dir / "tfidf_vectorizer.pkl"
+        cnt_npz = output_dir / "count_matrix.npz"
+        tfd_npz = output_dir / "tfidf_matrix.npz"
         
-        with open(output_dir / "semantic_index.pkl", "rb") as f:
-            semantic_index = pickle.load(f)
-        
-        with open(output_dir / "count_vectorizer.pkl", "rb") as f:
+        # Verify required authoritative artifacts exist
+        missing = [str(p) for p in [emb_path, map_path, cv_path, tv_path, cnt_npz, tfd_npz] if not p.exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"Missing precomputed authoritative artifacts: {missing}. "
+                f"Please run `python main.py precompute`."
+            )
+            
+        # 1. Load vectorizers
+        with open(cv_path, "rb") as f:
             builder.count_vectorizer = pickle.load(f)
-        
-        with open(output_dir / "tfidf_vectorizer.pkl", "rb") as f:
+            
+        with open(tv_path, "rb") as f:
             builder.tfidf_vectorizer = pickle.load(f)
+            
+        # 2. Load ID mapping
+        with open(map_path, "r") as f:
+            id_map_data = json.load(f)
+        tmdb_id_to_idx = {int(k): v for k, v in id_map_data["tmdb_id_to_idx"].items()}
+        idx_to_tmdb_id = {v: int(k) for k, v in tmdb_id_to_idx.items()}
         
-        return builder, feature_matrix, semantic_index
+        # 3. Load embeddings
+        semantic_embeddings = np.load(emb_path)
+        expected_dim = 768
+        actual_dim = semantic_embeddings.shape[1]
+        if actual_dim != expected_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch: found {actual_dim}d, expected {expected_dim}d ({builder.semantic_model_name}). "
+                f"Please run `python main.py precompute` to generate valid 768-d embeddings."
+            )
+            
+        # 4. Load canonical dataset and metadata from SQLite
+        canonical_movies = builder.load_canonical_dataset()
+        movie_ids = [m['tmdb_id'] for m in canonical_movies]
+        movie_titles = [m['title'] for m in canonical_movies]
+        movie_metadata = {m['tmdb_id']: m for m in canonical_movies}
+        
+        # 5. Load persistent sparse count and TF-IDF matrices
+        count_matrix = sp.load_npz(cnt_npz)
+        tfidf_matrix = sp.load_npz(tfd_npz)
+        
+        if count_matrix.shape != (len(movie_ids), 5000):
+            raise ValueError(f"Count matrix shape mismatch: {count_matrix.shape}, expected ({len(movie_ids)}, 5000)")
+        if tfidf_matrix.shape != (len(movie_ids), 5000):
+            raise ValueError(f"TF-IDF matrix shape mismatch: {tfidf_matrix.shape}, expected ({len(movie_ids)}, 5000)")
+            
+        feature_names = builder.count_vectorizer.get_feature_names_out().tolist()
+        tfidf_feature_names = builder.tfidf_vectorizer.get_feature_names_out().tolist()
+        
+        # 6. Construct lightweight compatibility container
+        feature_matrix = FeatureMatrix(
+            movie_ids=movie_ids,
+            movie_titles=movie_titles,
+            count_matrix=count_matrix,
+            tfidf_matrix=tfidf_matrix,
+            semantic_embeddings=semantic_embeddings,
+            feature_names=feature_names,
+            tfidf_feature_names=tfidf_feature_names,
+            movie_metadata=movie_metadata,
+            tmdb_id_to_idx=tmdb_id_to_idx,
+            idx_to_tmdb_id=idx_to_tmdb_id
+        )
+            
+        return builder, feature_matrix, None
 
-    def transform_query(self, query: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def transform_query(self, query: str) -> Tuple[Any, Any, np.ndarray]:
         count_vec = self.count_vectorizer.transform([query])
         tfidf_vec = self.tfidf_vectorizer.transform([query])
-        semantic_vec = self.semantic_model.encode([query])
+        semantic_vec = self.semantic_model.encode([query], normalize_embeddings=True)
         return count_vec, tfidf_vec, semantic_vec
 
 

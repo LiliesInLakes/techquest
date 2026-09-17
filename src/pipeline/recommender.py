@@ -1,9 +1,11 @@
 import asyncio
 import sys
+import json
 from typing import List, Dict, Any, Optional, Tuple, Set
 from dataclasses import dataclass
 import numpy as np
 from scipy.sparse import csr_matrix
+from pathlib import Path
 import yaml
 
 from src.tmdb.client import TMDBClient, Movie
@@ -22,6 +24,38 @@ class RecommendationResult:
     reasoning: str
     score: float
     rank: int
+
+
+def _sanitize_keywords(kw_data: Any) -> List[str]:
+    if not kw_data:
+        return []
+    if isinstance(kw_data, str):
+        kw_data = kw_data.strip()
+        if not kw_data:
+            return []
+        try:
+            parsed = json.loads(kw_data)
+            if isinstance(parsed, list):
+                return [str(k).strip().strip('[]"\'') for k in parsed if str(k).strip().strip('[]"\'')]
+        except Exception:
+            pass
+        return [k.strip().strip('[]"\'') for k in kw_data.replace('|', ',').split(',') if k.strip().strip('[]"\'')]
+    if isinstance(kw_data, list):
+        cleaned = []
+        for item in kw_data:
+            if isinstance(item, str) and item.strip().startswith('[') and item.strip().endswith(']'):
+                try:
+                    p = json.loads(item)
+                    if isinstance(p, list):
+                        cleaned.extend([str(k).strip().strip('[]"\'') for k in p if str(k).strip().strip('[]"\'')])
+                        continue
+                except Exception:
+                    pass
+            c_str = str(item).strip().strip('[]"\'')
+            if c_str:
+                cleaned.append(c_str)
+        return cleaned
+    return []
 
 
 class MovieRecommender:
@@ -66,20 +100,33 @@ class MovieRecommender:
         self.matrix_builder = FeatureMatrixBuilder(config_path=self.config_path)
         
         try:
-            self.matrix_builder, self.feature_matrix, self.semantic_index = \
+            self.matrix_builder, self.feature_matrix, _ = \
                 FeatureMatrixBuilder.load(self.config_path)
             print("Loaded precomputed feature matrix", file=sys.stderr)
-        except FileNotFoundError:
-            print("Precomputed matrix not found, building...", file=sys.stderr)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"Precomputed matrix issue ({e}), building from {self.matrix_builder.db_path}...", file=sys.stderr)
             self.feature_matrix = self.matrix_builder.build_and_save()
-            self.semantic_index = self.matrix_builder.build_semantic_index(self.feature_matrix)
+        self.semantic_index = None
         
-        self.semantic_search = SemanticKeywordSearch(threshold=0.65)
-        all_keywords = []
-        for meta in self.feature_matrix.movie_metadata.values():
-            all_keywords.extend(meta.get('keywords', []))
-            all_keywords.extend(meta.get('genres', []))
-        self.semantic_search.build_index(all_keywords)
+        model_name = self.rec_config.get("semantic_model_name", "multi-qa-mpnet-base-dot-v1")
+        kw_path = Path("data/processed/keyword_embeddings.pkl")
+        if kw_path.exists():
+            try:
+                self.semantic_search = SemanticKeywordSearch.load(str(kw_path), model_name=model_name)
+            except Exception:
+                self.semantic_search = SemanticKeywordSearch(
+                    model_name=model_name,
+                    threshold=self.rec_config.get("semantic_similarity_threshold", 0.65)
+                )
+                self.semantic_search.build_index(self.feature_matrix.feature_names)
+                self.semantic_search.save(str(kw_path))
+        else:
+            self.semantic_search = SemanticKeywordSearch(
+                model_name=model_name,
+                threshold=self.rec_config.get("semantic_similarity_threshold", 0.65)
+            )
+            self.semantic_search.build_index(self.feature_matrix.feature_names)
+            self.semantic_search.save(str(kw_path))
         
         self.hybrid_matcher = HybridKeywordMatcher(
             self.semantic_search, self.feature_matrix.feature_names
@@ -175,10 +222,13 @@ class MovieRecommender:
         subscriptions: List[str] = None,
         region: str = "US",
         language: str = "en",
-        top_k: int = 10,
-        natural_language: str = None
+        top_k: Optional[int] = None,
+        natural_language: str = None,
+        excluded_movie_ids: Optional[List[int]] = None
     ) -> Dict[str, Any]:
         await self.initialize()
+        if top_k is None:
+            top_k = int(self.rec_config.get("final_recommendations", 1))
         
         preferences = preferences or {}
         subscriptions = subscriptions or []
@@ -249,30 +299,29 @@ class MovieRecommender:
         )
         
         final_ranked = self.diversity_filter.filter(final_ranked, self.feature_matrix)
+        if excluded_movie_ids:
+            excluded_set = set(excluded_movie_ids)
+            final_ranked = [m for m in final_ranked if m.movie_id not in excluded_set]
         top_movies = self.ranker.get_top_k(final_ranked, top_k)
         
         movie_dicts = []
         ranking_factors = []
         candidate_lookup = {c.get('id') or c.get('movie_id'): c for c in candidate_movies}
-        PLATFORMS_POOL = ["Netflix", "Prime Video", "Disney+", "Max", "Apple TV+", "Hulu", "Paramount+"]
         for rm in top_movies:
             meta = self.feature_matrix.movie_metadata.get(rm.movie_id, {}) if self.feature_matrix and hasattr(self.feature_matrix, "movie_metadata") else {}
             cand = candidate_lookup.get(rm.movie_id, {})
             
             genres_list = rm.genres or cand.get('genres', []) or meta.get('genres', [])
-            genres_str = " ".join([str(g).lower() for g in genres_list])
             
+            # Genuine streaming platforms if available from real candidate data, otherwise empty list
             platforms = []
-            if "animation" in genres_str or "family" in genres_str or "disney" in str(cand.get('title', '')).lower():
-                platforms.append("Disney+")
-            if "science fiction" in genres_str or "action" in genres_str:
-                platforms.append("Prime Video" if rm.movie_id % 2 == 0 else "Netflix")
-            if "horror" in genres_str or "thriller" in genres_str or "crime" in genres_str:
-                platforms.append("Max" if rm.movie_id % 3 == 0 else "Netflix")
-            if not platforms:
-                platforms = [PLATFORMS_POOL[rm.movie_id % len(PLATFORMS_POOL)]]
-            if len(platforms) == 1 and (rm.movie_id % 2 == 0):
-                platforms.append("Apple TV+")
+            if cand.get('streaming_platforms') and isinstance(cand.get('streaming_platforms'), list):
+                platforms = list(cand.get('streaming_platforms'))
+            elif cand.get('watch_providers') and isinstance(cand.get('watch_providers'), dict):
+                wp = cand.get('watch_providers')
+                flatrate = wp.get('flatrate') or []
+                platforms = [p.get('provider_name') for p in flatrate if isinstance(p, dict) and p.get('provider_name')]
+            platforms = list(dict.fromkeys([p for p in platforms if isinstance(p, str) and p.strip()]))
 
             movie_dicts.append({
                 'id': rm.movie_id,
@@ -284,8 +333,10 @@ class MovieRecommender:
                 'release_date': cand.get('release_date', '') or meta.get('release_date', ''),
                 'director': cand.get('director', []) or meta.get('director', []),
                 'cast': cand.get('cast', []) or meta.get('cast', []),
-                'keywords': cand.get('keywords', []) or meta.get('keywords', []),
-                'streaming_platforms': platforms
+                'keywords': _sanitize_keywords(cand.get('keywords') or meta.get('keywords', [])),
+                'streaming_platforms': platforms,
+                'poster_path': cand.get('poster_path') or meta.get('poster_path') or None,
+                'original_language': cand.get('original_language') or meta.get('original_language', ''),
             })
             ranking_factors.append(rm.reasoning_factors)
         
@@ -305,24 +356,80 @@ class MovieRecommender:
                 rank=i + 1
             ))
         
+        top_pick_verdict = None
+        if movie_dicts:
+            top_pick_verdict = await self._generate_top_pick_verdict(
+                movie_dicts[0],
+                user_profile,
+                ranking_factors[0] if ranking_factors else {},
+                user_query,
+                watch_history_summary
+            )
+
+        single_rec = {
+            'rank': 1,
+            'title': recommendations[0].movie.get('title'),
+            'movie': recommendations[0].movie,
+            'reasoning': recommendations[0].reasoning,
+            'verdict': top_pick_verdict,
+            'score': round(recommendations[0].score, 4)
+        } if recommendations else None
+
         return {
             'recommendations': [
                 {
                     'rank': r.rank,
                     'movie': r.movie,
                     'reasoning': r.reasoning,
+                    'verdict': top_pick_verdict if r.rank == 1 else None,
                     'score': round(r.score, 4)
                 }
                 for r in recommendations
             ],
+            'recommendation': single_rec,
+            'top_pick': single_rec,
             'user_profile': {
                 'top_genres': user_profile.top_genres[:5],
                 'top_keywords': user_profile.top_keywords[:10],
+                'top_tags': getattr(user_profile, 'top_tags', [])[:10],
+                'top_themes': getattr(user_profile, 'top_themes', [])[:10],
+                'top_tones': getattr(user_profile, 'top_tones', [])[:10],
+                'negative_preferences': getattr(user_profile, 'negative_preferences', {}),
                 'avg_rating': user_profile.avg_rating,
                 'watch_count': user_profile.watch_count
             },
             'extracted_features': extracted_features.to_dict() if extracted_features else None
         }
+
+    async def get_replacement_recommendation(
+        self,
+        user_id: str,
+        excluded_movie_ids: List[int],
+        natural_language: Optional[str] = None,
+        subscriptions: List[str] = None,
+        region: str = "US",
+        language: str = "en"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetches the next highest ranked recommendation that is not in excluded_movie_ids.
+        Used for background replacement when a user skips / rejects a movie.
+        """
+        recs_data = await self.get_recommendations(
+            user_id=user_id,
+            subscriptions=subscriptions or [],
+            region=region,
+            language=language,
+            top_k=1,
+            natural_language=natural_language,
+            excluded_movie_ids=excluded_movie_ids
+        )
+        recs = recs_data.get("recommendations", [])
+        if recs:
+            rec_item = recs[0]
+            if recs_data.get("top_pick") and recs_data["top_pick"].get("verdict"):
+                rec_item["verdict"] = recs_data["top_pick"]["verdict"]
+            return rec_item
+        return None
 
     async def _get_candidate_movies_stage1(
         self,
@@ -332,10 +439,12 @@ class MovieRecommender:
         language: str,
         user_profile: UserPreferenceProfile
     ) -> List[Dict[str, Any]]:
-        # Stage 1: TMDB returns a LOOSELY sorted pool only (popularity.desc).
-        # No strict filtering at the API level besides the primary genre;
-        # exclusions are applied in Python. If TMDB is unreachable
-        # (no/invalid key, offline), fall back to the local feature-matrix pool.
+        # Stage 1: TMDB discovers live candidate IDs matching hard constraints.
+        # SQLite verifies membership against the authoritative movie_features.db corpus.
+        # Candidates absent from SQLite are strictly excluded before ranking.
+        sqlite_metadata = self.feature_matrix.movie_metadata if self.feature_matrix else {}
+        sqlite_id_set = set(self.feature_matrix.tmdb_id_to_idx.keys()) if (self.feature_matrix and hasattr(self.feature_matrix, "tmdb_id_to_idx")) else set(sqlite_metadata.keys())
+
         if extracted_features:
             if self.tmdb_client is None:
                 return self._get_local_candidates(extracted_features)
@@ -344,61 +453,70 @@ class MovieRecommender:
                     tmdb_params = self.nl_extractor.build_tmdb_discover_params(
                         extracted_features, subscriptions, region, language
                     )
-                    movies = await client.discover_movies(**tmdb_params)
-
+                    
+                    total_tmdb_candidates = 0
                     candidates = []
-                    for m in movies[:self.rec_config.get("stage1_max_tmdb_results", 200)]:
-                        if self._passes_exclusions(m, extracted_features):
-                            candidates.append({
-                                'id': m.id,
-                                'title': m.title,
-                                'overview': m.overview,
-                                'genres': m.genres,
-                                'release_date': m.release_date,
-                                'vote_average': m.vote_average,
-                                'vote_count': m.vote_count,
-                                'popularity': m.popularity,
-                                'original_language': m.original_language
-                            })
+                    seen_ids = set()
 
-                    if len(candidates) < 50:
-                        # Fetch additional pages using the same discover params (genre/year/runtime)
-                        for page_num in range(2, 4):
-                            if len(candidates) >= 50:
-                                break
-                            page_params = tmdb_params.copy()
+                    # Fetch TMDB discovery candidates (up to 5 pages if needed to satisfy candidate target)
+                    max_pages = 5
+                    for page_num in range(1, max_pages + 1):
+                        page_params = tmdb_params.copy()
+                        if page_num > 1:
                             page_params["page"] = page_num
-                            page_movies = await client.discover_movies(**page_params)
-                            for m in page_movies:
-                                if m.id not in {c['id'] for c in candidates} and self._passes_exclusions(m, extracted_features):
-                                    candidates.append({
-                                        'id': m.id,
-                                        'title': m.title,
-                                        'overview': m.overview,
-                                        'genres': m.genres,
-                                        'release_date': m.release_date,
-                                        'vote_average': m.vote_average,
-                                        'vote_count': m.vote_count,
-                                        'popularity': m.popularity,
-                                        'original_language': m.original_language
-                                    })
+                            
+                        page_movies = await client.discover_movies(**page_params)
+                        if not page_movies:
+                            break
+                            
+                        total_tmdb_candidates += len(page_movies)
                         
-                        # Only fallback to general popular movies if no specific genre was requested
-                        if not extracted_features.genres and len(candidates) < 50:
-                            popular = await client.get_popular_movies(region=region, language=language, page=1)
-                            for m in popular[:100]:
-                                if m.id not in {c['id'] for c in candidates} and self._passes_exclusions(m, extracted_features):
-                                    candidates.append({
-                                        'id': m.id,
-                                        'title': m.title,
-                                        'overview': m.overview,
-                                        'genres': m.genres,
-                                        'release_date': m.release_date,
-                                        'vote_average': m.vote_average,
-                                        'vote_count': m.vote_count,
-                                        'popularity': m.popularity,
-                                        'original_language': m.original_language
-                                    })
+                        for m in page_movies:
+                            if m.id in seen_ids:
+                                continue
+                            seen_ids.add(m.id)
+                            
+                            # Strict SQLite membership filter: candidate MUST exist in movie_features.db
+                            if m.id not in sqlite_id_set:
+                                continue
+                                
+                            if self._passes_exclusions(m, extracted_features):
+                                meta = sqlite_metadata.get(m.id, {})
+                                candidates.append({
+                                    'id': m.id,
+                                    'title': meta.get('title') or m.title,
+                                    'overview': meta.get('overview') or m.overview,
+                                    'genres': meta.get('genres') or m.genres,
+                                    'release_date': meta.get('release_date') or m.release_date,
+                                    'vote_average': meta.get('vote_average') if meta.get('vote_average', 0) > 0 else m.vote_average,
+                                    'vote_count': meta.get('vote_count') if meta.get('vote_count', 0) > 0 else m.vote_count,
+                                    'popularity': m.popularity or meta.get('popularity', 0),
+                                    'original_language': m.original_language or meta.get('original_language', 'en'),
+                                    'poster_path': m.poster_path
+                                })
+                                
+                        if len(candidates) >= self.rec_config.get("stage1_candidates", 50):
+                            break
+
+                    matched_count = len(candidates)
+                    excluded_count = total_tmdb_candidates - matched_count
+                    coverage_pct = (matched_count / total_tmdb_candidates * 100.0) if total_tmdb_candidates > 0 else 0.0
+                    print(
+                        f"[Candidate Discovery] TMDB candidates: {total_tmdb_candidates} | "
+                        f"SQLite matches: {matched_count} | Excluded (out-of-database): {excluded_count} | "
+                        f"Coverage: {coverage_pct:.1f}%",
+                        file=sys.stderr
+                    )
+
+                    # If still insufficient after TMDB pagination, top up with SQLite local fallback matching hard constraints
+                    if len(candidates) < 50:
+                        fallback_pool = self._get_local_candidates(extracted_features)
+                        for fb in fallback_pool:
+                            if fb['id'] not in seen_ids:
+                                candidates.append(fb)
+                                seen_ids.add(fb['id'])
+                            if len(candidates) >= self.rec_config.get("stage1_candidates", 100):
+                                break
 
                     if candidates:
                         return candidates[:self.rec_config.get("stage1_candidates", 100)]
@@ -418,9 +536,12 @@ class MovieRecommender:
     def _get_local_candidates(
         self, extracted_features: Optional[ExtractedFeatures]
     ) -> List[Dict[str, Any]]:
-        # Local fallback: every movie in the precomputed feature matrix,
-        # minus hard exclusions. Loose pool — ranking happens in stage 1/2.
+        # Offline fallback candidate pool directly from movie_features.db / feature_matrix
+        # Applies all extracted explicit hard constraints
         candidates = []
+        if not self.feature_matrix or not hasattr(self.feature_matrix, "movie_metadata"):
+            return candidates
+
         for movie_id, meta in self.feature_matrix.movie_metadata.items():
             movie = {
                 'id': movie_id,
@@ -428,15 +549,55 @@ class MovieRecommender:
                 'overview': meta.get('overview', ''),
                 'genres': meta.get('genres', []),
                 'release_date': meta.get('release_date', ''),
-                'vote_average': meta.get('vote_average', 0),
+                'vote_average': meta.get('vote_average', 0.0),
                 'vote_count': meta.get('vote_count', 0),
                 'popularity': meta.get('popularity', 0),
                 'original_language': meta.get('original_language', 'en'),
             }
-            if self._passes_exclusions(movie, extracted_features):
+            if self._passes_all_hard_filters(movie, extracted_features):
                 candidates.append(movie)
-        candidates.sort(key=lambda c: (c.get('vote_average', 0), c.get('popularity', 0)), reverse=True)
+
+        candidates.sort(key=lambda c: (c.get('vote_count', 0), c.get('vote_average', 0)), reverse=True)
         return candidates
+
+    def _passes_all_hard_filters(self, movie: Dict[str, Any], extracted_features: Optional[ExtractedFeatures]) -> bool:
+        if not extracted_features:
+            return True
+
+        if not self._passes_exclusions(movie, extracted_features):
+            return False
+
+        genres = [g.lower() for g in movie.get('genres', [])]
+
+        # Explicit genres hard constraint (if explicitly requested, movie must match)
+        if extracted_features.explicit_genres:
+            req_genres = [g.lower() for g in extracted_features.explicit_genres]
+            if not any(g in genres for g in req_genres):
+                return False
+
+        # Release year constraints
+        release_date = movie.get('release_date', '')
+        if release_date and len(release_date) >= 4:
+            try:
+                year = int(release_date[:4])
+                if extracted_features.release_year_min and year < extracted_features.release_year_min:
+                    return False
+                if extracted_features.release_year_max and year > extracted_features.release_year_max:
+                    return False
+            except ValueError:
+                pass
+
+        # Language constraint
+        if extracted_features.original_language and extracted_features.original_language != "en":
+            if movie.get('original_language') != extracted_features.original_language:
+                return False
+
+        # Explicit min rating (only if explicitly extracted/requested by user)
+        if extracted_features.min_rating and extracted_features.min_rating > 0.0:
+            if movie.get('vote_average', 0.0) < extracted_features.min_rating:
+                return False
+
+        return True
 
     def _passes_exclusions(self, movie, extracted_features: ExtractedFeatures) -> bool:
         if not extracted_features:
@@ -499,7 +660,8 @@ class MovieRecommender:
                         'vote_average': m.vote_average,
                         'vote_count': m.vote_count,
                         'popularity': m.popularity,
-                        'original_language': m.original_language
+                        'original_language': m.original_language,
+                        'poster_path': m.poster_path
                     })
             
             popular = await client.get_popular_movies(region=region, language=language, page=1)
@@ -513,7 +675,8 @@ class MovieRecommender:
                     'vote_average': m.vote_average,
                     'vote_count': m.vote_count,
                     'popularity': m.popularity,
-                    'original_language': m.original_language
+                    'original_language': m.original_language,
+                    'poster_path': m.poster_path
                 })
             
             seen = set()
@@ -580,6 +743,27 @@ class MovieRecommender:
                 for m, f in zip(movies, ranking_factors)
             ]
 
+    async def _generate_top_pick_verdict(
+        self,
+        top_movie: Dict[str, Any],
+        user_profile: UserPreferenceProfile,
+        ranking_factors: Dict[str, float],
+        user_query: str,
+        watch_history_summary: str
+    ) -> str:
+        if not top_movie:
+            return ""
+        if self.reasoner:
+            try:
+                return await self.reasoner.generate_top_pick_verdict(
+                    top_movie, user_profile, ranking_factors, user_query, watch_history_summary
+                )
+            except Exception:
+                pass
+        return self.template_engine.generate_top_pick(
+            top_movie, user_profile, ranking_factors, user_query
+        )
+
     def analyze_user_preferences(
         self,
         watch_history: List[Dict[str, Any]],
@@ -610,7 +794,19 @@ class MovieRecommender:
         await self.initialize()
         
         meta = self.feature_matrix.movie_metadata.get(movie_id, {}) if self.feature_matrix else {}
-        similar = self.semantic_index.get(movie_id, [])[:10] if self.semantic_index else []
+        similar = []
+        if self.feature_matrix and hasattr(self.feature_matrix, "semantic_embeddings"):
+            if hasattr(self.feature_matrix, "tmdb_id_to_idx") and self.feature_matrix.tmdb_id_to_idx:
+                idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
+            else:
+                idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
+                
+            if idx is not None:
+                sims = np.dot(self.feature_matrix.semantic_embeddings[idx], self.feature_matrix.semantic_embeddings.T)
+                top_indices = np.argsort(sims)[::-1][1:11]
+                for ti in top_indices:
+                    sim_id = self.feature_matrix.idx_to_tmdb_id.get(ti, self.feature_matrix.movie_ids[ti])
+                    similar.append((sim_id, float(sims[ti])))
         
         if self.tmdb_client is not None:
             try:
@@ -648,7 +844,7 @@ class MovieRecommender:
             'original_language': meta.get('original_language', 'en'),
             'poster_path': None,
             'backdrop_path': None,
-            'keywords': meta.get('keywords', []),
+            'keywords': _sanitize_keywords(meta.get('keywords', [])),
             'credits': {'cast': meta.get('cast', []), 'crew': meta.get('director', [])},
             'watch_providers': {},
             'similar_movies': similar

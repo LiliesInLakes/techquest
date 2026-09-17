@@ -26,7 +26,7 @@ class SemanticSearchResult:
 
 
 class SemanticKeywordSearch:
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', threshold: float = 0.7):
+    def __init__(self, model_name: str = 'multi-qa-mpnet-base-dot-v1', threshold: float = 0.7):
         self.model = SentenceTransformer(model_name)
         self.threshold = threshold
         self.keyword_embeddings: Dict[str, np.ndarray] = {}
@@ -131,7 +131,7 @@ class SemanticKeywordSearch:
             pickle.dump(data, f)
 
     @classmethod
-    def load(cls, path: str, model_name: str = 'all-MiniLM-L6-v2') -> 'SemanticKeywordSearch':
+    def load(cls, path: str, model_name: str = 'multi-qa-mpnet-base-dot-v1') -> 'SemanticKeywordSearch':
         with open(path, 'rb') as f:
             data = pickle.load(f)
         
@@ -141,22 +141,63 @@ class SemanticKeywordSearch:
         instance.synonym_cache = data['synonym_cache']
         instance.embedding_matrix = np.array(list(data['keyword_embeddings'].values()))
         
+        expected_dim = instance.model.get_sentence_embedding_dimension()
+        if instance.embedding_matrix.shape[1] != expected_dim:
+            raise ValueError(
+                f"Keyword embedding dimension mismatch: found {instance.embedding_matrix.shape[1]}d, expected {expected_dim}d"
+            )
+        
         return instance
 
 
 class HybridKeywordMatcher:
-    def __init__(self, semantic_search: SemanticKeywordSearch, feature_names: List[str]):
+    def __init__(
+        self,
+        semantic_search: SemanticKeywordSearch,
+        feature_names: List[str],
+        cache_path: str = "data/processed/keyword_feature_embeddings.npy"
+    ):
         self.semantic_search = semantic_search
         self.feature_names = [f.lower() for f in feature_names]
+        self.cache_path = Path(cache_path)
         self.feature_embeddings = None
         
-        self._build_feature_embeddings()
+        self._load_or_build_feature_embeddings()
 
-    def _build_feature_embeddings(self):
-        print(f"Building embeddings for {len(self.feature_names)} features...", file=sys.stderr)
-        self.feature_embeddings = self.semantic_search.model.encode(
-            self.feature_names, show_progress_bar=True, batch_size=64
-        )
+    def _load_or_build_feature_embeddings(self):
+        expected_count = len(self.feature_names)
+        expected_dim = self.semantic_search.model.get_sentence_embedding_dimension()
+        
+        # 1. Try to load cached embeddings
+        if self.cache_path.exists():
+            try:
+                arr = np.load(self.cache_path)
+                if (
+                    arr.shape[0] == expected_count
+                    and arr.shape[1] == expected_dim
+                    and arr.dtype == np.float32
+                    and not np.isnan(arr).any()
+                ):
+                    self.feature_embeddings = arr
+                    return
+            except Exception as e:
+                print(f"Failed to load keyword feature cache ({e}), rebuilding...", file=sys.stderr)
+        
+        # 2. Rebuild if missing or incompatible
+        print(f"Building embeddings for {expected_count} features ({expected_dim}d)...", file=sys.stderr)
+        embeddings = self.semantic_search.model.encode(
+            self.feature_names,
+            show_progress_bar=False,
+            batch_size=128,
+            normalize_embeddings=True
+        ).astype(np.float32)
+        
+        self.feature_embeddings = embeddings
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(self.cache_path, embeddings)
+        except Exception as e:
+            print(f"Could not persist keyword feature cache ({e})", file=sys.stderr)
 
     def match_user_keywords(self, user_keywords: List[str], top_k: int = 50) -> Dict[str, List[Tuple[str, float]]]:
         results = {}

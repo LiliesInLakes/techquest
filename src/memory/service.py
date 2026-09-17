@@ -40,11 +40,14 @@ class UserMemoryService:
     def _get_movie_metadata(self, movie_id: int, fallback_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if fallback_meta:
             return fallback_meta
+        stored_meta = self.storage.get_movie_metadata_fallback(movie_id)
+        if stored_meta:
+            return stored_meta
         self._ensure_feature_matrix()
         if self.feature_matrix and hasattr(self.feature_matrix, "movie_metadata"):
             if movie_id in self.feature_matrix.movie_metadata:
                 return self.feature_matrix.movie_metadata[movie_id]
-        return self.storage.get_movie_metadata_fallback(movie_id)
+        return {}
 
     def _serialize_profile(self, profile: UserProfileMemory) -> str:
         data = {
@@ -187,6 +190,47 @@ class UserMemoryService:
         self.storage.save_profile_json(user_id, self._serialize_profile(profile), updated_at=ts)
         return event
 
+    def record_rejection(
+        self,
+        user_id: str,
+        movie_id: int,
+        reason: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timestamp: Optional[float] = None
+    ) -> Tuple[WatchEvent, UserProfileMemory]:
+        """
+        Records an explicit movie rejection / not-interested event, updates negative preference
+        penalties in the user profile memory, and returns the event and updated profile.
+        """
+        ts = timestamp or time.time()
+        meta = self._get_movie_metadata(movie_id, metadata)
+        if reason:
+            meta["rejection_reason"] = reason
+
+        event = WatchEvent(
+            user_id=user_id,
+            movie_id=movie_id,
+            event_type=EventType.REJECTED,
+            signal_weight=0.5,
+            timestamp=ts,
+            metadata=meta
+        )
+        event_id = self.storage.record_event(event)
+        event.id = event_id
+
+        # Update profile with negative penalties
+        profile = self.get_user_profile(user_id)
+        profile = self.engine.process_rejection_event(
+            event=event,
+            profile=profile,
+            movie_metadata=meta,
+            penalty=0.5,
+            current_time=ts
+        )
+
+        self.storage.save_profile_json(user_id, self._serialize_profile(profile), updated_at=ts)
+        return event, profile
+
     def record_rating(
         self,
         user_id: str,
@@ -254,12 +298,10 @@ class UserMemoryService:
             elif isinstance(extracted_features, dict):
                 genres.extend(extracted_features.get("genres", []))
 
-        # Also extract meaningful words if keywords list is small
-        if not keywords and query_text:
-            raw_words = [w.lower().strip(",.!?\"'()") for w in query_text.split() if len(w) > 3]
-            stop_words = {"want", "watch", "some", "movie", "movies", "film", "films", "show", "shows", "with", "about", "after", "like", "find", "good", "best", "recommend", "please"}
-            keywords = [w for w in raw_words if w not in stop_words]
-
+        # NOTE: We do NOT fall back to raw query word tokenization here.
+        # Only structured features extracted by NLFeatureExtractor (keywords, tmdb_keywords, genres)
+        # should influence taste memory.  Falling back to raw word splitting causes generic verbs
+        # and pronouns ("Tonight", "Give", "Something") to leak into learned keyword preferences.
         if not keywords and not genres:
             return
 
@@ -380,6 +422,9 @@ class UserMemoryService:
             return sorted_items[:top_n]
 
         top_genres = get_sorted_feature_list(FeatureType.GENRE.value, top_n=10)
+        top_tags = get_sorted_feature_list(FeatureType.TAG.value, top_n=15)
+        top_themes = get_sorted_feature_list(FeatureType.THEME.value, top_n=10)
+        top_tones = get_sorted_feature_list(FeatureType.TONE.value, top_n=10)
         top_keywords = get_sorted_feature_list(FeatureType.KEYWORD.value, top_n=20)
         top_directors = get_sorted_feature_list(FeatureType.DIRECTOR.value, top_n=10)
         top_cast = get_sorted_feature_list(FeatureType.CAST.value, top_n=10)
@@ -432,9 +477,65 @@ class UserMemoryService:
             watch_count=profile.total_interactions,
             feature_vector=feature_vector,
             keyword_weights=keyword_weights,
-            genre_weights=genre_weights
+            genre_weights=genre_weights,
+            top_tags=top_tags,
+            top_themes=top_themes,
+            top_tones=top_tones,
+            negative_preferences=negative_lookup
         )
-        # Attach negative_preferences dict to profile object
-        setattr(adapter_profile, "negative_preferences", negative_lookup)
         setattr(adapter_profile, "raw_memory_profile", profile)
         return adapter_profile
+
+    def get_user_profile_summary(self, user_id: str) -> Dict[str, Any]:
+        """
+        Returns structured multi-dimensional summary including genres, tags, themes,
+        tones, keywords, active negative penalties, and learning curve metrics.
+        """
+        profile = self.get_user_profile(user_id)
+        combined = self.get_combined_preference_profile(user_id)
+        
+        n = profile.total_interactions
+        beta = 0.40 + 0.60 * max(0.0, 1.0 - n / 10.0)
+        conf_pct = round((n / (n + 10.0)) * 100, 1) if (n + 10.0) > 0 else 0.0
+
+        if n < 4:
+            stage_text = "🌱 Initial Discovery"
+            stability_text = "Exploration"
+        elif n < 10:
+            stage_text = "⚡ Active Calibration"
+            stability_text = "Balancing"
+        else:
+            stage_text = "🎯 Tuned Profile"
+            stability_text = "Calibrated"
+
+        negative_penalties = []
+        for ft, val_dict in profile.negative_preferences.items():
+            for fv, neg_pref in val_dict.items():
+                if neg_pref.penalty_weight > 0.05:
+                    negative_penalties.append({
+                        "feature_type": ft,
+                        "name": fv,
+                        "penalty": round(neg_pref.penalty_weight, 3),
+                        "count": neg_pref.interaction_count
+                    })
+        negative_penalties.sort(key=lambda x: x["penalty"], reverse=True)
+
+        return {
+            "user_id": user_id,
+            "genres": [{"name": g, "score": round(score, 3)} for g, score in combined.top_genres if score > 0],
+            "tags": [{"name": t, "score": round(score, 3)} for t, score in combined.top_tags if score > 0],
+            "themes": [{"name": th, "score": round(score, 3)} for th, score in combined.top_themes if score > 0],
+            "tones": [{"name": tn, "score": round(score, 3)} for tn, score in combined.top_tones if score > 0],
+            "keywords": [{"name": k, "score": round(score, 3)} for k, score in combined.top_keywords if score > 0],
+            "negative_penalties": negative_penalties,
+            "subscriptions": getattr(profile, "subscriptions", ["Netflix", "Prime Video", "Disney+"]),
+            "stats": {
+                "total_interactions": n,
+                "beta": round(beta, 3),
+                "short_term_pct": round(beta * 100, 1),
+                "long_term_pct": round((1 - beta) * 100, 1),
+                "confidence_pct": conf_pct,
+                "stage": stage_text,
+                "stability": stability_text
+            }
+        }

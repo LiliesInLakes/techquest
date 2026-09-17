@@ -1,0 +1,8 @@
+{
+  "database_name": "movie_features.db",
+  "version": "1.0.0",
+  "sha256": "73155f5b45758bb6325fb89f4889e4f67bb29ae969dda42ca9a69618b36ef4c2",
+  "size_bytes": 256065536,
+  "canonical_movie_count": 87425,
+  "total_sqlite_rows": 87585
+}

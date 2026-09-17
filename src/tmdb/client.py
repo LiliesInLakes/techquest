@@ -103,13 +103,31 @@ class TMDBClient:
 
     async def search_person(self, name: str) -> Optional[int]:
         """Search for an actor or director by name and return their TMDB Person ID."""
+        if not hasattr(self, "_person_cache"):
+            self._person_cache: Dict[str, Optional[int]] = {}
+        
+        name_clean = name.strip()
+        if name_clean in self._person_cache:
+            return self._person_cache[name_clean]
+            
         try:
-            data = await self._request("/search/person", {"query": name})
+            data = await self._request("/search/person", {"query": name_clean})
             results = data.get("results", [])
             if results:
-                return results[0].get("id")
-        except Exception:
-            pass
+                # Prefer strong/exact match if present, else first result
+                exact_matches = [r for r in results if r.get("name", "").lower() == name_clean.lower()]
+                best = exact_matches[0] if exact_matches else results[0]
+                pid = best.get("id")
+                print(f"[TMDBClient] Resolved person '{name_clean}' -> Person ID {pid}", file=sys.stderr)
+                self._person_cache[name_clean] = pid
+                return pid
+            else:
+                print(f"[TMDBClient] Could not resolve person '{name_clean}' (0 results found)", file=sys.stderr)
+                self._person_cache[name_clean] = None
+        except Exception as e:
+            print(f"[TMDBClient] Error resolving person '{name_clean}': {e}", file=sys.stderr)
+            self._person_cache[name_clean] = None
+            
         return None
 
     async def search_keyword(self, keyword: str) -> Optional[int]:
@@ -126,52 +144,86 @@ class TMDBClient:
     async def discover_movies(
         self,
         genre: Optional[str] = None,
-        region: str = "US",
-        language: str = "en",
+        region: Optional[str] = None,
+        language: Optional[str] = None,
         min_rating: float = 0.0,
-        min_votes: int = 10,
+        min_votes: int = 0,
         sort_by: str = "popularity.desc",
         page: int = 1,
         with_watch_providers: Optional[List[str]] = None,
-        watch_region: str = "US",
+        watch_region: Optional[str] = None,
         with_genres: Optional[str] = None,
         without_genres: Optional[str] = None,
-        with_cast: Optional[str] = None,
-        with_crew: Optional[str] = None,
+        with_cast: Optional[Any] = None,
+        with_crew: Optional[Any] = None,
         primary_release_year: Optional[int] = None,
         primary_release_date_gte: Optional[str] = None,
         primary_release_date_lte: Optional[str] = None,
         with_runtime_gte: Optional[int] = None,
         with_runtime_lte: Optional[int] = None,
         with_keywords: Optional[str] = None,
+        include_adult: Optional[bool] = None,
         **kwargs
     ) -> List[Movie]:
-        genre_ids = await self._get_genre_ids() if genre else None
-        genre_id = genre_ids.get(genre.lower()) if genre_ids and genre else None
-        
-        params = {
+        params: Dict[str, Any] = {
             "sort_by": sort_by,
             "page": page,
-            "vote_average.gte": min_rating,
-            "vote_count.gte": min_votes,
-            "with_original_language": language,
-            "region": region,
-            "watch_region": watch_region
         }
+        
+        if min_rating and min_rating > 0.0:
+            params["vote_average.gte"] = min_rating
+            
+        if min_votes and min_votes > 0:
+            params["vote_count.gte"] = min_votes
+            
+        if language:
+            params["with_original_language"] = language
+            
+        if region:
+            params["region"] = region
+            params["watch_region"] = watch_region or region
+        elif watch_region:
+            params["watch_region"] = watch_region
+
+        if include_adult is not None:
+            params["include_adult"] = include_adult
         
         if with_genres:
             params["with_genres"] = with_genres
-        elif genre_id:
-            params["with_genres"] = genre_id
+        elif genre:
+            genre_ids = await self._get_genre_ids()
+            genre_id = genre_ids.get(genre.lower()) if genre_ids else None
+            if genre_id:
+                params["with_genres"] = genre_id
 
         if without_genres:
             params["without_genres"] = without_genres
         
         if with_cast:
-            params["with_cast"] = with_cast
+            resolved_cast = []
+            items = with_cast if isinstance(with_cast, list) else [c.strip() for c in str(with_cast).split(",") if c.strip()]
+            for item in items:
+                if str(item).isdigit():
+                    resolved_cast.append(str(item))
+                else:
+                    pid = await self.search_person(str(item))
+                    if pid is not None:
+                        resolved_cast.append(str(pid))
+            if resolved_cast:
+                params["with_cast"] = ",".join(resolved_cast)
 
         if with_crew:
-            params["with_crew"] = with_crew
+            resolved_crew = []
+            items = with_crew if isinstance(with_crew, list) else [c.strip() for c in str(with_crew).split(",") if c.strip()]
+            for item in items:
+                if str(item).isdigit():
+                    resolved_crew.append(str(item))
+                else:
+                    pid = await self.search_person(str(item))
+                    if pid is not None:
+                        resolved_crew.append(str(pid))
+            if resolved_crew:
+                params["with_crew"] = ",".join(resolved_crew)
 
         if primary_release_year:
             params["primary_release_year"] = primary_release_year
@@ -199,11 +251,12 @@ class TMDBClient:
             numeric_pids = [p for p in with_watch_providers if str(p).isdigit()]
             named_p = [p for p in with_watch_providers if not str(p).isdigit()]
             resolved_pids = [int(p) for p in numeric_pids]
+            w_reg = watch_region or region or "US"
             if named_p:
-                resolved_pids.extend(await self._resolve_watch_provider_ids(named_p, watch_region))
+                resolved_pids.extend(await self._resolve_watch_provider_ids(named_p, w_reg))
             if resolved_pids:
                 params["with_watch_providers"] = "|".join(str(i) for i in resolved_pids)
-                params["watch_region"] = watch_region
+                params["watch_region"] = w_reg
         
         data = await self._request("/discover/movie", params)
         return [self._parse_movie(m) for m in data.get("results", [])]

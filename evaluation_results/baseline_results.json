@@ -1,0 +1,1378 @@
+{
+  "metadata": {
+    "timestamp": "2026-09-15T14:50:49.304019+00:00",
+    "benchmark_version": "1.0",
+    "total_cases": 25,
+    "candidate_source": "live_tmdb",
+    "retrieval_timestamp": "2026-09-15T14:49:33.959819+00:00",
+    "feature_matrix_movie_count": 10,
+    "configured_embedding_model": "multi-qa-mpnet-base-dot-v1",
+    "configured_embedding_dim": 768,
+    "stored_embedding_model": "all-MiniLM-L6-v2",
+    "stored_embedding_dim": 384,
+    "runtime_semantic_scoring_status": "BROKEN / DEFAULT 0.0 (ValueError on shape mismatch)",
+    "semantic_weight_experiments_status": "BLOCKED (Underlying semantic score is always 0.0)"
+  },
+  "aggregate_results": {
+    "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+    "hitrate_at_5": 0.84,
+    "hitrate_at_10": 0.84,
+    "ndcg_at_5": 0.4449621184927128,
+    "ndcg_at_10": 0.4449621184927128,
+    "avg_rating_at_5": 8.3594,
+    "avg_rating_at_10": 8.282027999999999,
+    "avg_vote_count_at_5": 25389.08,
+    "avg_vote_count_at_10": 25126.764,
+    "ild_at_5": 0.5972006621341857,
+    "ild_at_10": 0.5972006621341857,
+    "personalization_at_5": 0.0,
+    "personalization_at_10": 0.0,
+    "history_input_coverage": 0.88,
+    "recommendation_feature_coverage_at_5": 0.36800000000000005,
+    "recommendation_feature_coverage_at_10": 0.29600000000000004,
+    "offline_minilm_diagnostic_at_5": 0.3079348670111762,
+    "offline_minilm_diagnostic_at_10": 0.3079348670111762
+  },
+  "per_test_case_results": [
+    {
+      "test_case_id": "TC-001",
+      "category": "semantic_conceptual",
+      "query": "mind-bending simulated reality, virtual worlds and corporate espionage inside dreams",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        634649,
+        671
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "Spider-Man: No Way Home",
+        "Harry Potter and the Philosopher's Stone"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.09680166195185971,
+        "ndcg_at_10": 0.09680166195185971,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.3489,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 29507.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.15989352017641068,
+        "minilm_cosine_sim_at_10": 0.15989352017641068,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-002",
+      "category": "semantic_conceptual",
+      "query": "space travel, wormholes, relativity, and saving humanity from environmental collapse",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        19995,
+        11,
+        157336,
+        324857,
+        27205
+      ],
+      "recommended_titles": [
+        "Avatar",
+        "Star Wars",
+        "Interstellar",
+        "Spider-Man: Into the Spider-Verse",
+        "Inception"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.4
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.4305976015199917,
+        "ndcg_at_10": 0.4305976015199917,
+        "avg_rating_at_5": 8.215399999999999,
+        "avg_rating_at_10": 8.215399999999999,
+        "avg_vote_count_at_5": 31338.4,
+        "avg_vote_count_at_10": 31338.4,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.653798907995224,
+        "ild_at_10": 0.653798907995224,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.2339562401175499,
+        "minilm_cosine_sim_at_10": 0.2339562401175499,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-003",
+      "category": "semantic_conceptual",
+      "query": "insomnia, consumerism, underground rebellion, split personality disorder, and anarchism",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.14433083962070967,
+        "ndcg_at_10": 0.14433083962070967,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.14742028713226318,
+        "minilm_cosine_sim_at_10": 0.14742028713226318,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-004",
+      "category": "semantic_conceptual",
+      "query": "non-linear crime stories, hitmen, boxing fixed matches, and stolen briefcase in Los Angeles",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        680,
+        155,
+        278,
+        238,
+        240
+      ],
+      "recommended_titles": [
+        "Pulp Fiction",
+        "The Dark Knight",
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Godfather Part II"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.6,
+        "recommendation_feature_coverage_at_10": 0.6
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.882808018370203,
+        "ndcg_at_10": 0.882808018370203,
+        "avg_rating_at_5": 8.6066,
+        "avg_rating_at_10": 8.6066,
+        "avg_vote_count_at_5": 27351.6,
+        "avg_vote_count_at_10": 27351.6,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6063963373502096,
+        "ild_at_10": 0.6063963373502096,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.3675581415494283,
+        "minilm_cosine_sim_at_10": 0.3675581415494283,
+        "evaluated_movies_count_at_5": 3,
+        "evaluated_movies_count_at_10": 3
+      }
+    },
+    {
+      "test_case_id": "TC-005",
+      "category": "semantic_conceptual",
+      "query": "vigilante justice, corrupt Gotham city, psychotic villain Joker, and moral decay",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.3726262671130988,
+        "ndcg_at_10": 0.3726262671130988,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.5417487621307373,
+        "minilm_cosine_sim_at_10": 0.5417487621307373,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-006",
+      "category": "genre_standard",
+      "query": "science fiction space exploration and futuristic technology",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        19995,
+        11,
+        157336,
+        324857,
+        27205
+      ],
+      "recommended_titles": [
+        "Avatar",
+        "Star Wars",
+        "Interstellar",
+        "Spider-Man: Into the Spider-Verse",
+        "Inception"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.4
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.36082185080344803,
+        "ndcg_at_10": 0.36082185080344803,
+        "avg_rating_at_5": 8.215399999999999,
+        "avg_rating_at_10": 8.215399999999999,
+        "avg_vote_count_at_5": 31338.4,
+        "avg_vote_count_at_10": 31338.4,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.653798907995224,
+        "ild_at_10": 0.653798907995224,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.40672120451927185,
+        "minilm_cosine_sim_at_10": 0.40672120451927185,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-007",
+      "category": "genre_standard",
+      "query": "crime drama mafia family power struggle and loyalty",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        495193,
+        257,
+        13373,
+        47638,
+        785001
+      ],
+      "recommended_titles": [
+        "Benji",
+        "Oliver Twist",
+        "Millions",
+        "The River Rat",
+        "Picture Perfect Lies"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.0,
+        "recommendation_feature_coverage_at_10": 0.0
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 0.0,
+        "hitrate_at_10": 0.0,
+        "ndcg_at_5": 0.0,
+        "ndcg_at_10": 0.0,
+        "avg_rating_at_5": 6.418200000000001,
+        "avg_rating_at_10": 6.418200000000001,
+        "avg_vote_count_at_5": 411.0,
+        "avg_vote_count_at_10": 411.0,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": null,
+        "ild_at_10": null,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": null,
+        "minilm_cosine_sim_at_10": null,
+        "evaluated_movies_count_at_5": 0,
+        "evaluated_movies_count_at_10": 0
+      }
+    },
+    {
+      "test_case_id": "TC-008",
+      "category": "genre_standard",
+      "query": "inspiring prison drama friendship hope and redemption",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        278,
+        550,
+        13,
+        238,
+        240
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "Fight Club",
+        "Forrest Gump",
+        "The Godfather",
+        "The Godfather Part II"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.6,
+        "recommendation_feature_coverage_at_10": 0.6
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.8178747578506881,
+        "ndcg_at_10": 0.8178747578506881,
+        "avg_rating_at_5": 8.583400000000001,
+        "avg_rating_at_10": 8.583400000000001,
+        "avg_vote_count_at_5": 26502.8,
+        "avg_vote_count_at_10": 26502.8,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6528282264868418,
+        "ild_at_10": 0.6528282264868418,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.42441928883393604,
+        "minilm_cosine_sim_at_10": 0.42441928883393604,
+        "evaluated_movies_count_at_5": 3,
+        "evaluated_movies_count_at_10": 3
+      }
+    },
+    {
+      "test_case_id": "TC-009",
+      "category": "genre_standard",
+      "query": "historical World War II drama compassion and survival",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        424,
+        423,
+        857,
+        16869,
+        324786
+      ],
+      "recommended_titles": [
+        "Schindler's List",
+        "The Pianist",
+        "Saving Private Ryan",
+        "Inglourious Basterds",
+        "Hacksaw Ridge"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.0,
+        "recommendation_feature_coverage_at_10": 0.0
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.6735439182299785,
+        "ndcg_at_10": 0.6735439182299785,
+        "avg_rating_at_5": 8.3166,
+        "avg_rating_at_10": 8.3166,
+        "avg_vote_count_at_5": 17225.8,
+        "avg_vote_count_at_10": 17225.8,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": null,
+        "ild_at_10": null,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": null,
+        "minilm_cosine_sim_at_10": null,
+        "evaluated_movies_count_at_5": 0,
+        "evaluated_movies_count_at_10": 0
+      }
+    },
+    {
+      "test_case_id": "TC-010",
+      "category": "genre_standard",
+      "query": "heartwarming comedy drama through decades of American history",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        490132,
+        487558,
+        375262,
+        462477,
+        140823
+      ],
+      "recommended_titles": [
+        "Green Book",
+        "BlacKkKlansman",
+        "The Favourite",
+        "Newsies",
+        "Saving Mr. Banks"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.0,
+        "recommendation_feature_coverage_at_10": 0.0
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 0.0,
+        "hitrate_at_10": 0.0,
+        "ndcg_at_5": 0.0,
+        "ndcg_at_10": 0.0,
+        "avg_rating_at_5": 7.707800000000001,
+        "avg_rating_at_10": 7.707800000000001,
+        "avg_vote_count_at_5": 6239.8,
+        "avg_vote_count_at_10": 6239.8,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": null,
+        "ild_at_10": null,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": null,
+        "minilm_cosine_sim_at_10": null,
+        "evaluated_movies_count_at_5": 0,
+        "evaluated_movies_count_at_10": 0
+      }
+    },
+    {
+      "test_case_id": "TC-011",
+      "category": "mixed_constraint",
+      "query": "1990s action science fiction cyber thriller",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        155,
+        280,
+        679,
+        752,
+        49026
+      ],
+      "recommended_titles": [
+        "The Dark Knight",
+        "Terminator 2: Judgment Day",
+        "Aliens",
+        "V for Vendetta",
+        "The Dark Knight Rises"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.2,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 0.0,
+        "hitrate_at_10": 0.0,
+        "ndcg_at_5": 0.0,
+        "ndcg_at_10": 0.0,
+        "avg_rating_at_5": 8.079199999999998,
+        "avg_rating_at_10": 8.079199999999998,
+        "avg_vote_count_at_5": 20708.8,
+        "avg_vote_count_at_10": 20708.8,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.0,
+        "ild_at_10": 0.0,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.3063957989215851,
+        "minilm_cosine_sim_at_10": 0.3063957989215851,
+        "evaluated_movies_count_at_5": 1,
+        "evaluated_movies_count_at_10": 1
+      }
+    },
+    {
+      "test_case_id": "TC-012",
+      "category": "mixed_constraint",
+      "query": "2000s psychological thriller heist with Christopher Nolan direction",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        155,
+        1422,
+        6977,
+        393,
+        1949
+      ],
+      "recommended_titles": [
+        "The Dark Knight",
+        "The Departed",
+        "No Country for Old Men",
+        "Kill Bill: Vol. 2",
+        "Zodiac"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.2,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.28866167924141933,
+        "ndcg_at_10": 0.28866167924141933,
+        "avg_rating_at_5": 8.0098,
+        "avg_rating_at_10": 8.0098,
+        "avg_vote_count_at_5": 18877.0,
+        "avg_vote_count_at_10": 18877.0,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.0,
+        "ild_at_10": 0.0,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.416858047246933,
+        "minilm_cosine_sim_at_10": 0.416858047246933,
+        "evaluated_movies_count_at_5": 1,
+        "evaluated_movies_count_at_10": 1
+      }
+    },
+    {
+      "test_case_id": "TC-013",
+      "category": "mixed_constraint",
+      "query": "1970s crime mafia epic masterpiece",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        680,
+        155,
+        278,
+        238,
+        240
+      ],
+      "recommended_titles": [
+        "Pulp Fiction",
+        "The Dark Knight",
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Godfather Part II"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.6,
+        "recommendation_feature_coverage_at_10": 0.6
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.43067655807339306,
+        "ndcg_at_10": 0.43067655807339306,
+        "avg_rating_at_5": 8.6066,
+        "avg_rating_at_10": 8.6066,
+        "avg_vote_count_at_5": 27351.6,
+        "avg_vote_count_at_10": 27351.6,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6063963373502096,
+        "ild_at_10": 0.6063963373502096,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.34843672315279645,
+        "minilm_cosine_sim_at_10": 0.34843672315279645,
+        "evaluated_movies_count_at_5": 3,
+        "evaluated_movies_count_at_10": 3
+      }
+    },
+    {
+      "test_case_id": "TC-014",
+      "category": "mixed_constraint",
+      "query": "1990s Quentin Tarantino neo-noir indie crime",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        680,
+        155,
+        278,
+        238,
+        240
+      ],
+      "recommended_titles": [
+        "Pulp Fiction",
+        "The Dark Knight",
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Godfather Part II"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.6,
+        "recommendation_feature_coverage_at_10": 0.6
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0,
+        "avg_rating_at_5": 8.6066,
+        "avg_rating_at_10": 8.6066,
+        "avg_vote_count_at_5": 27351.6,
+        "avg_vote_count_at_10": 27351.6,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6063963373502096,
+        "ild_at_10": 0.6063963373502096,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.3455774088700612,
+        "minilm_cosine_sim_at_10": 0.3455774088700612,
+        "evaluated_movies_count_at_5": 3,
+        "evaluated_movies_count_at_10": 3
+      }
+    },
+    {
+      "test_case_id": "TC-015",
+      "category": "mixed_constraint",
+      "query": "2010s epic sci-fi adventure in space",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        157336,
+        324857,
+        27205,
+        299534,
+        299536
+      ],
+      "recommended_titles": [
+        "Interstellar",
+        "Spider-Man: Into the Spider-Verse",
+        "Inception",
+        "Avengers: Endgame",
+        "Avengers: Infinity War"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.0,
+        "recommendation_feature_coverage_at_10": 0.0
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.95583058934618,
+        "ndcg_at_10": 0.95583058934618,
+        "avg_rating_at_5": 8.349,
+        "avg_rating_at_10": 8.349,
+        "avg_vote_count_at_5": 32144.8,
+        "avg_vote_count_at_10": 32144.8,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": null,
+        "ild_at_10": null,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": null,
+        "minilm_cosine_sim_at_10": null,
+        "evaluated_movies_count_at_5": 0,
+        "evaluated_movies_count_at_10": 0
+      }
+    },
+    {
+      "test_case_id": "TC-016",
+      "category": "mood_tone",
+      "query": "dark dystopian psychological dread and existential angst",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.11613045631714865,
+        "ndcg_at_10": 0.11613045631714865,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.26686321943998337,
+        "minilm_cosine_sim_at_10": 0.26686321943998337,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-017",
+      "category": "mood_tone",
+      "query": "emotional uplifting hope perseverance through tragic circumstances",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.541942129480027,
+        "ndcg_at_10": 0.541942129480027,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.20502719283103943,
+        "minilm_cosine_sim_at_10": 0.20502719283103943,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-018",
+      "category": "mood_tone",
+      "query": "gritty tense moral dilemma crime in urban setting",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        680,
+        155,
+        278,
+        238,
+        240
+      ],
+      "recommended_titles": [
+        "Pulp Fiction",
+        "The Dark Knight",
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Godfather Part II"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.6,
+        "recommendation_feature_coverage_at_10": 0.6
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.9838988741111756,
+        "ndcg_at_10": 0.9838988741111756,
+        "avg_rating_at_5": 8.6066,
+        "avg_rating_at_10": 8.6066,
+        "avg_vote_count_at_5": 27351.6,
+        "avg_vote_count_at_10": 27351.6,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6063963373502096,
+        "ild_at_10": 0.6063963373502096,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.3562794327735901,
+        "minilm_cosine_sim_at_10": 0.3562794327735901,
+        "evaluated_movies_count_at_5": 3,
+        "evaluated_movies_count_at_10": 3
+      }
+    },
+    {
+      "test_case_id": "TC-019",
+      "category": "mood_tone",
+      "query": "awe-inspiring grand cosmic scale loneliness and love across time",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.3390090350877799,
+        "ndcg_at_10": 0.3390090350877799,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.20255298167467117,
+        "minilm_cosine_sim_at_10": 0.20255298167467117,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-020",
+      "category": "mood_tone",
+      "query": "stylish cool witty fast-paced dialogue and sudden violence",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 0.0,
+        "hitrate_at_10": 0.0,
+        "ndcg_at_5": 0.0,
+        "ndcg_at_10": 0.0,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": null,
+        "personalization_at_10": null
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.29657572507858276,
+        "minilm_cosine_sim_at_10": 0.29657572507858276,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-021",
+      "category": "history_sensitive",
+      "query": "futuristic thrillers with high stakes",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        238,
+        155,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Dark Knight",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 0.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.2021073465005476,
+        "ndcg_at_10": 0.2021073465005476,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": 0.0,
+        "personalization_at_10": 0.0
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.3100144863128662,
+        "minilm_cosine_sim_at_10": 0.3100144863128662,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-022",
+      "category": "history_sensitive",
+      "query": "intense crime dramas about criminal syndicates",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        680,
+        155,
+        278,
+        238,
+        240
+      ],
+      "recommended_titles": [
+        "Pulp Fiction",
+        "The Dark Knight",
+        "The Shawshank Redemption",
+        "The Godfather",
+        "The Godfather Part II"
+      ],
+      "coverage": {
+        "history_input_coverage": 0.5,
+        "recommendation_feature_coverage_at_5": 0.6,
+        "recommendation_feature_coverage_at_10": 0.6
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.9218842208520892,
+        "ndcg_at_10": 0.9218842208520892,
+        "avg_rating_at_5": 8.6066,
+        "avg_rating_at_10": 8.6066,
+        "avg_vote_count_at_5": 27351.6,
+        "avg_vote_count_at_10": 27351.6,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6063963373502096,
+        "ild_at_10": 0.6063963373502096,
+        "personalization_at_5": 0.0,
+        "personalization_at_10": 0.0
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.36112935344378155,
+        "minilm_cosine_sim_at_10": 0.36112935344378155,
+        "evaluated_movies_count_at_5": 3,
+        "evaluated_movies_count_at_10": 3
+      }
+    },
+    {
+      "test_case_id": "TC-023",
+      "category": "history_sensitive",
+      "query": "profound historical and human struggle stories",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 10,
+      "recommended_ids": [
+        278,
+        155,
+        238,
+        157336,
+        687163,
+        299534,
+        299536,
+        24428,
+        49026,
+        936075
+      ],
+      "recommended_titles": [
+        "The Shawshank Redemption",
+        "The Dark Knight",
+        "The Godfather",
+        "Interstellar",
+        "Project Hail Mary",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "The Avengers",
+        "The Dark Knight Rises",
+        "Michael"
+      ],
+      "coverage": {
+        "history_input_coverage": 0.5,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.2
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.541942129480027,
+        "ndcg_at_10": 0.541942129480027,
+        "avg_rating_at_5": 8.616,
+        "avg_rating_at_10": 8.407599999999999,
+        "avg_vote_count_at_5": 28096.2,
+        "avg_vote_count_at_10": 27100.1,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.6704079508781433,
+        "ild_at_10": 0.6704079508781433,
+        "personalization_at_5": 0.0,
+        "personalization_at_10": 0.0
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.20956754684448242,
+        "minilm_cosine_sim_at_10": 0.20956754684448242,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-024",
+      "category": "history_sensitive",
+      "query": "mind-bending dark action thrillers",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        155,
+        19995,
+        122,
+        120,
+        324857
+      ],
+      "recommended_titles": [
+        "The Dark Knight",
+        "Avatar",
+        "The Lord of the Rings: The Return of the King",
+        "The Lord of the Rings: The Fellowship of the Ring",
+        "Spider-Man: Into the Spider-Verse"
+      ],
+      "coverage": {
+        "history_input_coverage": 1.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.4
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.541942129480027,
+        "ndcg_at_10": 0.541942129480027,
+        "avg_rating_at_5": 8.297799999999999,
+        "avg_rating_at_10": 8.297799999999999,
+        "avg_vote_count_at_5": 28978.0,
+        "avg_vote_count_at_10": 28978.0,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.8613357096910477,
+        "ild_at_10": 0.8613357096910477,
+        "personalization_at_5": 0.0,
+        "personalization_at_10": 0.0
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.34859099984169006,
+        "minilm_cosine_sim_at_10": 0.34859099984169006,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    },
+    {
+      "test_case_id": "TC-025",
+      "category": "history_sensitive",
+      "query": "sci-fi epics with philosophical themes",
+      "candidate_source": "live_tmdb",
+      "candidate_pool_size": 5,
+      "recommended_ids": [
+        11,
+        19995,
+        157336,
+        324857,
+        27205
+      ],
+      "recommended_titles": [
+        "Star Wars",
+        "Avatar",
+        "Interstellar",
+        "Spider-Man: Into the Spider-Verse",
+        "Inception"
+      ],
+      "coverage": {
+        "history_input_coverage": 0.0,
+        "recommendation_feature_coverage_at_5": 0.4,
+        "recommendation_feature_coverage_at_10": 0.4
+      },
+      "baseline_metrics": {
+        "runtime_semantic_relevance": "UNAVAILABLE / INVALID DUE TO EMBEDDING-SPACE MISMATCH",
+        "hitrate_at_5": 1.0,
+        "hitrate_at_10": 1.0,
+        "ndcg_at_5": 0.4806228988880274,
+        "ndcg_at_10": 0.4806228988880274,
+        "avg_rating_at_5": 8.215399999999999,
+        "avg_rating_at_10": 8.215399999999999,
+        "avg_vote_count_at_5": 31338.4,
+        "avg_vote_count_at_10": 31338.4,
+        "rating_coverage_at_5": 1.0,
+        "rating_coverage_at_10": 1.0,
+        "ild_at_5": 0.653798907995224,
+        "ild_at_10": 0.653798907995224,
+        "personalization_at_5": 0.0,
+        "personalization_at_10": 0.0
+      },
+      "offline_embedding_diagnostic": {
+        "description": "MiniLM 384d Query-to-Item Cosine Similarity (Artifact Diagnostic Only)",
+        "minilm_cosine_sim_at_5": 0.21104584634304047,
+        "minilm_cosine_sim_at_10": 0.21104584634304047,
+        "evaluated_movies_count_at_5": 2,
+        "evaluated_movies_count_at_10": 2
+      }
+    }
+  ]
+}

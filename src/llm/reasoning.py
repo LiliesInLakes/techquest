@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 from typing import List, Dict, Any, Optional
@@ -21,21 +22,32 @@ class RecommendationReasoning:
 class DeepSeekReasoner:
     def __init__(self, config_path: str = "config.yaml"):
         self.config = self._load_config(config_path)
+        kado_config = self.config.get("kado", {})
         deepseek_config = self.config.get("deepseek", {})
         
+        kado_key = os.getenv("KADO_API_KEY") or kado_config.get("api_key")
         deepseek_key = os.getenv("DEEPSEEK_API_KEY") or deepseek_config.get("api_key")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        
-        if deepseek_key and deepseek_key != "${DEEPSEEK_API_KEY}" and "your_deepseek_api_key" not in deepseek_key:
-            self.api_key = deepseek_key
-            self.base_url = deepseek_config.get("base_url", "https://api.deepseek.com/v1")
-            self.model = deepseek_config.get("model", "deepseek-chat")
+
+        api_key = None
+        if kado_key and kado_key != "${KADO_API_KEY}" and "your_kado_api_key" not in kado_key:
+            api_key = kado_key
+        elif deepseek_key and deepseek_key != "${DEEPSEEK_API_KEY}" and "your_deepseek_api_key" not in deepseek_key:
+            api_key = deepseek_key
+
+        default_base_url = "https://awesome.kado.so/openai/v1"
+        default_model = "kado"
+
+        if api_key:
+            self.api_key = api_key
+            self.base_url = os.getenv("KADO_BASE_URL") or kado_config.get("base_url") or os.getenv("DEEPSEEK_BASE_URL") or deepseek_config.get("base_url") or default_base_url
+            self.model = os.getenv("KADO_MODEL") or kado_config.get("model") or os.getenv("DEEPSEEK_MODEL") or deepseek_config.get("model") or default_model
         elif openrouter_key and openrouter_key != "${OPENROUTER_API_KEY}" and "your_openrouter_api_key" not in openrouter_key:
             self.api_key = openrouter_key
             self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
             self.model = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
         else:
-            raise ValueError("Neither DEEPSEEK_API_KEY nor OPENROUTER_API_KEY is configured")
+            raise ValueError("Neither KADO_API_KEY nor legacy LLM API key is configured")
         
         self.client = AsyncOpenAI(
             api_key=self.api_key,
@@ -104,13 +116,24 @@ Guidelines:
         movie_overview = movie.get('overview', '')
         movie_rating = movie.get('vote_average', 0)
         
-        top_genres = [g for g, _ in user_profile.top_genres[:5]] if user_profile.top_genres else []
-        top_keywords = [k for k, _ in user_profile.top_keywords[:10]] if user_profile.top_keywords else []
-        top_directors = [d for d, _ in user_profile.top_directors[:3]] if user_profile.top_directors else []
-        top_cast = [c for c, _ in user_profile.top_cast[:3]] if user_profile.top_cast else []
+        if isinstance(user_profile, dict):
+            raw_genres = user_profile.get('top_genres', [])
+            raw_keywords = user_profile.get('top_keywords', [])
+            raw_directors = user_profile.get('top_directors', [])
+            raw_cast = user_profile.get('top_cast', [])
+        else:
+            raw_genres = getattr(user_profile, 'top_genres', []) if user_profile else []
+            raw_keywords = getattr(user_profile, 'top_keywords', []) if user_profile else []
+            raw_directors = getattr(user_profile, 'top_directors', []) if user_profile else []
+            raw_cast = getattr(user_profile, 'top_cast', []) if user_profile else []
+        
+        top_genres = [g[0] if isinstance(g, (list, tuple)) else g for g in raw_genres[:5]]
+        top_keywords = [k[0] if isinstance(k, (list, tuple)) else k for k in raw_keywords[:10]]
+        top_directors = [d[0] if isinstance(d, (list, tuple)) else d for d in raw_directors[:3]]
+        top_cast = [c[0] if isinstance(c, (list, tuple)) else c for c in raw_cast[:3]]
         
         matched_genres = [g for g in movie_genres if g in top_genres]
-        matched_keywords = [k for k in top_keywords if k.lower() in movie_overview.lower()]
+        matched_keywords = [k for k in top_keywords if isinstance(k, str) and k.lower() in movie_overview.lower()]
         
         factors = []
         if ranking_factors.get('imdb', 0) > 0.7:
@@ -122,6 +145,9 @@ Guidelines:
         if ranking_factors.get('semantic', 0) > 0.6:
             factors.append("semantically similar to movies you like")
         
+        avg_rating_val = user_profile.get('avg_rating', 0) if isinstance(user_profile, dict) else getattr(user_profile, 'avg_rating', 0)
+        watch_count_val = user_profile.get('watch_count', 0) if isinstance(user_profile, dict) else getattr(user_profile, 'watch_count', 0)
+        
         prompt = f"""Movie: {movie_title}
 Genres: {', '.join(movie_genres)}
 IMDb Rating: {movie_rating}/10
@@ -132,8 +158,8 @@ User Preferences:
 - Favorite Keywords: {', '.join(top_keywords) if top_keywords else 'Not available'}
 - Favorite Directors: {', '.join(top_directors) if top_directors else 'Not available'}
 - Favorite Actors: {', '.join(top_cast) if top_cast else 'Not available'}
-- Average Rating Given: {user_profile.avg_rating:.1f}/10
-- Total Movies Watched: {user_profile.watch_count}
+- Average Rating Given: {avg_rating_val:.1f}/10
+- Total Movies Watched: {watch_count_val}
 
 User Query: {user_query if user_query else 'General recommendation'}
 
@@ -202,6 +228,54 @@ Write a natural, conversational recommendation reason (2-4 sentences) explaining
             user_preferences_matched=matched
         )
 
+    async def generate_top_pick_verdict(
+        self,
+        top_movie: Dict[str, Any],
+        user_profile,
+        ranking_factors: Dict[str, float],
+        user_query: str = "",
+        watch_history_summary: str = ""
+    ) -> str:
+        title = top_movie.get('title', 'Unknown')
+        genres = ', '.join([g if isinstance(g, str) else g.get('name', '') for g in top_movie.get('genres', [])])
+        prompt = f"""You are a movie recommendation expert. Write a decisive, compelling 2-3 sentence verdict explaining specifically why "{title}" is the definitive film for the user to watch tonight.
+
+Target Film: {title}
+Genres: {genres}
+Rating: {top_movie.get('vote_average', 0)}/10
+Overview: {top_movie.get('overview', '')[:300]}
+User Search Query: {user_query if user_query else 'Personalized taste match'}
+Watch History Summary: {watch_history_summary}
+
+STRICT CONSTRAINTS:
+1. You must ONLY discuss and evaluate "{title}". Do NOT substitute, mention, or recommend any other movie.
+2. Do NOT output metadata headers like "**#1 Top Pick:**", "Genres:", "Rating:", or "Runtime:".
+3. Write directly in engaging, conversational prose explaining why "{title}" fulfills their taste profile and search intent tonight."""
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"You are a movie curation expert. You write decisive verdicts solely for the specified film ({title}) without mentioning any other movie or outputting boilerplate template headers."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=250
+            )
+            verdict = response.choices[0].message.content.strip()
+            # Clean up any lingering markdown boilerplate headers
+            verdict = re.sub(r'^\*{0,2}#?1?\s*Top Pick:?.*?\*{0,2}\s*', '', verdict, flags=re.IGNORECASE)
+            verdict = re.sub(r'^\*{0,2}Final Verdict:?\*{0,2}\s*', '', verdict, flags=re.IGNORECASE)
+            verdict = re.sub(r'^\*{0,2}Why this is your ultimate watch:?\*{0,2}\s*', '', verdict, flags=re.IGNORECASE)
+            return verdict.strip()
+        except Exception:
+            return self._fallback_top_pick(top_movie, user_profile)
+
+    def _fallback_top_pick(self, top_movie: Dict[str, Any], user_profile) -> str:
+        title = top_movie.get('title', 'This movie')
+        rating = top_movie.get('vote_average', 0)
+        genres = ', '.join(top_movie.get('genres', []))
+        return f"If you're picking just one movie tonight, make it {title} ({rating}/10) — it stands out as your definitive top match across {genres} and your viewing preferences."
+
     async def generate_batch_reasoning(
         self,
         movies: List[Dict[str, Any]],
@@ -254,6 +328,12 @@ class ReasoningTemplateEngine:
         
         return f"{title} ({rating}/10) is a {', '.join(genres)} film that matches your viewing preferences."
 
+    def generate_top_pick(self, top_movie: Dict, profile, factors: Dict = None, user_query: str = "") -> str:
+        title = top_movie.get('title', 'This movie')
+        rating = top_movie.get('vote_average', 0)
+        genres = ', '.join(top_movie.get('genres', []))
+        return f"If you're picking just one movie tonight, make it {title} ({rating}/10) — it is your definitive #1 recommendation based on your taste profile in {genres}."
+
 
 async def main():
     try:
@@ -261,7 +341,7 @@ async def main():
         print("DeepSeekReasoner initialized successfully")
     except ValueError as e:
         print(f"Configuration error: {e}")
-        print("Set DEEPSEEK_API_KEY environment variable")
+KadoReasoner = DeepSeekReasoner
 
 
 if __name__ == "__main__":

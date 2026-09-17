@@ -1,21 +1,41 @@
 import numpy as np
+import math
+import re
 from typing import List, Dict, Any, Tuple, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from scipy.sparse import csr_matrix
 from sklearn.metrics.pairwise import cosine_similarity
 import yaml
 
 
+# ==========================================
+# Explicit Ranking Constants
+# ==========================================
+RATING_WEIGHT = 0.30
+TFIDF_WEIGHT = 0.25
+SEMANTIC_WEIGHT = 0.35
+POPULARITY_WEIGHT = 0.10
+
+PRIMARY_COHORT_RADIUS = 3
+SECONDARY_COHORT_RADIUS = 5
+
+COHORT_POPULARITY_WEIGHT = 0.70
+GLOBAL_POPULARITY_WEIGHT = 0.30
+
+MIN_COHORT_SIZE = 20
+
+
 @dataclass
 class RankingConfig:
-    imdb_weight: float = 0.3
-    tfidf_weight: float = 0.2
+    imdb_weight: float = RATING_WEIGHT
+    tfidf_weight: float = TFIDF_WEIGHT
+    semantic_weight: float = SEMANTIC_WEIGHT
+    popularity_weight: float = POPULARITY_WEIGHT
     watch_history_weight: float = 0.5
-    semantic_weight: float = 0.3
     content_weight: float = 0.4
     keyword_overlap_weight: float = 0.3
     min_vote_count: int = 100
-    popularity_boost: float = 0.1
+    popularity_boost: float = 0.1  # retained for backward compatibility
 
 
 @dataclass
@@ -43,27 +63,35 @@ class MovieRanker:
         self.preference_extractor = None
         self.feature_matrix = None
         self.semantic_search = None
+        self._cohort_index_built = False
+        self._global_max_rating_count = 102929
+        self._global_log_max = math.log1p(102929)
+        self._cohort_cache_r3: Dict[int, np.ndarray] = {}
+        self._cohort_cache_r5: Dict[int, np.ndarray] = {}
 
     def _load_config(self, config_path: str) -> RankingConfig:
         try:
             with open(config_path) as f:
                 cfg = yaml.safe_load(f)
-            rec_cfg = cfg.get("recommendation", {})
+            rec_cfg = cfg.get("recommendation", {}) if cfg else {}
             return RankingConfig(
-                imdb_weight=rec_cfg.get("imdb_weight", 0.3),
-                tfidf_weight=rec_cfg.get("tfidf_weight", 0.2),
-                watch_history_weight=rec_cfg.get("watch_history_weight", 0.5),
-                semantic_weight=rec_cfg.get("semantic_similarity_threshold", 0.3),
+                imdb_weight=float(rec_cfg.get("imdb_weight", RATING_WEIGHT)),
+                tfidf_weight=float(rec_cfg.get("tfidf_weight", TFIDF_WEIGHT)),
+                semantic_weight=float(rec_cfg.get("semantic_weight", SEMANTIC_WEIGHT)),
+                popularity_weight=float(rec_cfg.get("popularity_weight", POPULARITY_WEIGHT)),
+                watch_history_weight=float(rec_cfg.get("watch_history_weight", 0.5)),
                 content_weight=0.4,
                 keyword_overlap_weight=0.3
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, Exception):
             return RankingConfig()
 
     def set_dependencies(self, preference_extractor, feature_matrix, semantic_search):
         self.preference_extractor = preference_extractor
         self.feature_matrix = feature_matrix
         self.semantic_search = semantic_search
+        self._cohort_index_built = False
+        self._build_cohort_index()
 
     def rank_movies(
         self,
@@ -269,6 +297,24 @@ class MovieRanker:
             if isinstance(c, str):
                 features.append(c.strip().lower())
 
+        # Tags (MovieLens)
+        ml_tags = meta.get("movielens_tags", "")
+        if isinstance(ml_tags, str) and ml_tags.strip():
+            features.extend([t.strip().lower() for t in ml_tags.split(",") if t.strip()][:15])
+        elif isinstance(ml_tags, list):
+            features.extend([str(t).strip().lower() for t in ml_tags[:15] if str(t).strip()])
+        for tag in meta.get("tags", []):
+            if isinstance(tag, str):
+                features.append(tag.strip().lower())
+
+        # Themes & Tones
+        for th in meta.get("themes", meta.get("theme", [])):
+            if isinstance(th, str):
+                features.append(th.strip().lower())
+        for tn in meta.get("tones", meta.get("tone", meta.get("mood", []))):
+            if isinstance(tn, str):
+                features.append(tn.strip().lower())
+
         if not features:
             return 1.0
 
@@ -306,21 +352,157 @@ class MovieRanker:
         
         return scores
 
+    def _build_cohort_index(self):
+        """Precomputes release-year rating count distributions for fast cohort popularity lookup."""
+        if self._cohort_index_built:
+            return
+
+        metadata = getattr(self.feature_matrix, "movie_metadata", {}) if self.feature_matrix else {}
+        year_to_logs: Dict[int, List[float]] = {}
+        all_counts: List[int] = []
+
+        if metadata:
+            for mid, meta in metadata.items():
+                cnt = self._extract_rating_count(meta)
+                all_counts.append(cnt)
+                log_c = math.log1p(cnt)
+                yr = self._extract_release_year(meta)
+                if yr is not None:
+                    if yr not in year_to_logs:
+                        year_to_logs[yr] = []
+                    year_to_logs[yr].append(log_c)
+
+        self._global_max_rating_count = max(all_counts) if all_counts else 102929
+        self._global_log_max = math.log1p(self._global_max_rating_count)
+
+        self._cohort_cache_r3 = {}
+        self._cohort_cache_r5 = {}
+
+        all_years = sorted(year_to_logs.keys())
+        for yr in all_years:
+            # Primary radius 3 (Y +/- 3)
+            r3_logs = []
+            for delta in range(-PRIMARY_COHORT_RADIUS, PRIMARY_COHORT_RADIUS + 1):
+                r3_logs.extend(year_to_logs.get(yr + delta, []))
+            if r3_logs:
+                self._cohort_cache_r3[yr] = np.sort(np.array(r3_logs, dtype=np.float32))
+
+            # Secondary radius 5 (Y +/- 5)
+            r5_logs = []
+            for delta in range(-SECONDARY_COHORT_RADIUS, SECONDARY_COHORT_RADIUS + 1):
+                r5_logs.extend(year_to_logs.get(yr + delta, []))
+            if r5_logs:
+                self._cohort_cache_r5[yr] = np.sort(np.array(r5_logs, dtype=np.float32))
+
+        self._cohort_index_built = True
+
+    def _extract_release_year(self, movie: Dict[str, Any]) -> Optional[int]:
+        if not movie or not isinstance(movie, dict):
+            return None
+        
+        # 1. release_date (e.g. '1999-03-31')
+        rd = movie.get('release_date')
+        if rd and isinstance(rd, str) and len(rd.strip()) >= 4:
+            try:
+                yr = int(rd.strip()[:4])
+                if 1880 <= yr <= 2100:
+                    return yr
+            except (ValueError, TypeError):
+                pass
+        
+        # 2. release_year or year
+        ry = movie.get('release_year') or movie.get('year')
+        if ry is not None:
+            try:
+                yr = int(ry)
+                if 1880 <= yr <= 2100:
+                    return yr
+            except (ValueError, TypeError):
+                pass
+        
+        # 3. Title embedded year, e.g. "The Matrix (1999)"
+        title = movie.get('title')
+        if title and isinstance(title, str):
+            match = re.search(r'\((\d{4})\)', title)
+            if match:
+                try:
+                    yr = int(match.group(1))
+                    if 1880 <= yr <= 2100:
+                        return yr
+                except (ValueError, TypeError):
+                    pass
+        
+        # 4. Check feature_matrix metadata if movie_id present
+        mid = movie.get('id') or movie.get('movie_id')
+        if mid and self.feature_matrix and hasattr(self.feature_matrix, "movie_metadata"):
+            meta = self.feature_matrix.movie_metadata.get(mid, {})
+            if meta:
+                meta_rd = meta.get('release_date')
+                if meta_rd and isinstance(meta_rd, str) and len(meta_rd.strip()) >= 4:
+                    try:
+                        yr = int(meta_rd.strip()[:4])
+                        if 1880 <= yr <= 2100:
+                            return yr
+                    except (ValueError, TypeError):
+                        pass
+                meta_title = meta.get('title')
+                if meta_title and isinstance(meta_title, str):
+                    match = re.search(r'\((\d{4})\)', meta_title)
+                    if match:
+                        try:
+                            yr = int(match.group(1))
+                            if 1880 <= yr <= 2100:
+                                return yr
+                        except (ValueError, TypeError):
+                            pass
+
+        return None
+
+    def _extract_rating_count(self, movie: Dict[str, Any]) -> int:
+        if not movie or not isinstance(movie, dict):
+            return 0
+        
+        rc = movie.get('rating_count')
+        if rc is not None:
+            try:
+                val = int(rc)
+                if val > 0:
+                    return val
+            except (ValueError, TypeError):
+                pass
+        
+        vc = movie.get('vote_count')
+        if vc is not None:
+            try:
+                val = int(vc)
+                if val > 0:
+                    return val
+            except (ValueError, TypeError):
+                pass
+        
+        mid = movie.get('id') or movie.get('movie_id')
+        if mid and self.feature_matrix and hasattr(self.feature_matrix, "movie_metadata"):
+            meta = self.feature_matrix.movie_metadata.get(mid, {})
+            if meta:
+                meta_rc = meta.get('rating_count') or meta.get('vote_count')
+                if meta_rc is not None:
+                    try:
+                        val = int(meta_rc)
+                        if val > 0:
+                            return val
+                    except (ValueError, TypeError):
+                        pass
+        return 0
+
     def _compute_stage1_score(self, scores: Dict[str, float]) -> float:
         w = self.config
-        
         final = (
             scores['imdb'] * w.imdb_weight +
             scores['tfidf'] * w.tfidf_weight +
             scores['semantic'] * w.semantic_weight +
-            scores['popularity'] * self.config.popularity_boost
+            scores['popularity'] * w.popularity_weight
         )
-        
-        remaining_weight = 1.0 - w.imdb_weight - w.tfidf_weight - w.semantic_weight
-        if remaining_weight > 0:
-            final += scores['popularity'] * remaining_weight
-        
-        return final
+        return float(final)
 
     def _compute_imdb_score(self, movie: Dict[str, Any]) -> float:
         vote_avg = movie.get('vote_average', 0)
@@ -336,7 +518,15 @@ class MovieRanker:
             return 0.0
         
         try:
-            movie_idx = self.feature_matrix.movie_ids.index(movie_id)
+            movie_idx = None
+            if hasattr(self.feature_matrix, "tmdb_id_to_idx") and isinstance(self.feature_matrix.tmdb_id_to_idx, dict):
+                movie_idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
+            elif hasattr(self.feature_matrix, "movie_ids") and isinstance(self.feature_matrix.movie_ids, list):
+                movie_idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
+                
+            if movie_idx is None or not isinstance(movie_idx, (int, np.integer)):
+                return 0.0
+
             movie_tfidf = self.feature_matrix.tfidf_matrix[movie_idx]
             
             if hasattr(movie_tfidf, 'toarray'):
@@ -358,13 +548,24 @@ class MovieRanker:
             return 0.0
         
         try:
-            movie_idx = self.feature_matrix.movie_ids.index(movie_id)
-            movie_embedding = self.feature_matrix.semantic_embeddings[movie_idx].reshape(1, -1)
-            query_emb = query_embedding.reshape(1, -1)
-            
-            sim = cosine_similarity(query_emb, movie_embedding)[0][0]
-            return float(sim)
-        except (ValueError, IndexError):
+            movie_idx = None
+            if hasattr(self.feature_matrix, "tmdb_id_to_idx") and isinstance(self.feature_matrix.tmdb_id_to_idx, dict):
+                movie_idx = self.feature_matrix.tmdb_id_to_idx.get(movie_id)
+            elif hasattr(self.feature_matrix, "movie_ids") and isinstance(self.feature_matrix.movie_ids, list):
+                movie_idx = self.feature_matrix.movie_ids.index(movie_id) if movie_id in self.feature_matrix.movie_ids else None
+                
+            if movie_idx is None or not isinstance(movie_idx, (int, np.integer)):
+                return 0.0
+
+            q_vec = np.asarray(query_embedding).flatten()
+            m_vec = np.asarray(self.feature_matrix.semantic_embeddings[movie_idx]).flatten()
+            norm_q = np.linalg.norm(q_vec)
+            norm_m = np.linalg.norm(m_vec)
+            if norm_q == 0 or norm_m == 0:
+                return 0.0
+            sim = np.dot(q_vec, m_vec) / (norm_q * norm_m)
+            return float(max(0.0, float(sim)))
+        except (ValueError, IndexError, TypeError):
             return 0.0
 
     def _compute_content_score(self, movie_id: int, user_profile) -> float:
@@ -380,13 +581,50 @@ class MovieRanker:
         return self.preference_extractor.compute_keyword_overlap_score(user_profile, movie_id, self.feature_matrix)
 
     def _compute_popularity_score(self, movie: Dict[str, Any]) -> float:
-        popularity = movie.get('popularity', 0)
-        vote_count = movie.get('vote_count', 0)
-        
-        norm_popularity = min(popularity / 1000.0, 1.0)
-        norm_votes = min(vote_count / 10000.0, 1.0)
-        
-        return (norm_popularity + norm_votes) / 2.0
+        """
+        Computes Age-Relative Popularity:
+        age_adjusted_popularity = 0.70 * cohort_percentile + 0.30 * global_popularity
+        - Uses log1p(rating_count)
+        - Cohort radius: primary +/- 3 years, secondary +/- 5 years
+        - Safely falls back to global popularity if year missing or cohort sparse (< 20 items)
+        - Safely handles zero / NULL counts
+        """
+        self._build_cohort_index()
+
+        rating_count = self._extract_rating_count(movie)
+        if rating_count <= 0:
+            return 0.0
+
+        log_count = math.log1p(rating_count)
+        global_pop = (log_count / self._global_log_max) if self._global_log_max > 0 else 0.0
+        global_pop = max(0.0, min(1.0, global_pop))
+
+        year = self._extract_release_year(movie)
+
+        # Missing release year: safely fall back to global popularity
+        if year is None:
+            return float(global_pop)
+
+        # Determine cohort
+        cohort = None
+        if year in self._cohort_cache_r3 and len(self._cohort_cache_r3[year]) >= MIN_COHORT_SIZE:
+            cohort = self._cohort_cache_r3[year]
+        elif year in self._cohort_cache_r5 and len(self._cohort_cache_r5[year]) >= MIN_COHORT_SIZE:
+            cohort = self._cohort_cache_r5[year]
+
+        if cohort is None or len(cohort) == 0:
+            return float(global_pop)
+
+        # Cohort percentile rank
+        rank = np.searchsorted(cohort, log_count, side='right')
+        cohort_percentile = float(rank / len(cohort))
+        cohort_percentile = max(0.0, min(1.0, cohort_percentile))
+
+        age_adjusted = (
+            COHORT_POPULARITY_WEIGHT * cohort_percentile +
+            GLOBAL_POPULARITY_WEIGHT * global_pop
+        )
+        return float(max(0.0, min(1.0, age_adjusted)))
 
     def _compute_final_score(self, scores: Dict[str, float]) -> float:
         w = self.config
@@ -400,15 +638,15 @@ class MovieRanker:
         final = (
             scores['imdb'] * w.imdb_weight +
             scores['tfidf'] * w.tfidf_weight +
-            content_combined * (1 - w.imdb_weight - w.tfidf_weight)
+            content_combined * (1.0 - w.imdb_weight - w.tfidf_weight - w.popularity_weight)
         )
         
-        final += scores['popularity'] * self.config.popularity_boost
+        final += scores['popularity'] * w.popularity_weight
         
         penalty = scores.get('negative_penalty', 1.0)
         final = final * penalty
         
-        return final
+        return float(final)
 
     def get_top_k(self, ranked_movies: List[RankedMovie], k: int = 10) -> List[RankedMovie]:
         return ranked_movies[:k]

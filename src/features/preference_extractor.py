@@ -21,6 +21,10 @@ class UserPreferenceProfile:
     feature_vector: np.ndarray
     keyword_weights: Dict[str, float]
     genre_weights: Dict[str, float]
+    top_tags: List[Tuple[str, float]] = field(default_factory=list)
+    top_themes: List[Tuple[str, float]] = field(default_factory=list)
+    top_tones: List[Tuple[str, float]] = field(default_factory=list)
+    negative_preferences: Dict[str, float] = field(default_factory=dict)
 
 
 class PreferenceExtractor:
@@ -92,8 +96,13 @@ class PreferenceExtractor:
             language_counter[lang] += weight
             
             if feature_matrix and movie_id in feature_matrix.movie_metadata:
-                idx = feature_matrix.movie_ids.index(movie_id)
-                movie_features.append((feature_matrix.count_matrix[idx], weight))
+                idx = None
+                if hasattr(feature_matrix, "tmdb_id_to_idx") and isinstance(feature_matrix.tmdb_id_to_idx, dict):
+                    idx = feature_matrix.tmdb_id_to_idx.get(movie_id)
+                elif hasattr(feature_matrix, "movie_ids") and isinstance(feature_matrix.movie_ids, list):
+                    idx = feature_matrix.movie_ids.index(movie_id) if movie_id in feature_matrix.movie_ids else None
+                if idx is not None and isinstance(idx, (int, np.integer)):
+                    movie_features.append((feature_matrix.count_matrix[idx], weight))
         
         feature_vector = self._compute_feature_vector(movie_features, feature_matrix)
         
@@ -240,10 +249,18 @@ class PreferenceExtractor:
         )
 
     def compute_content_similarity(self, profile: UserPreferenceProfile, movie_id: int, feature_matrix) -> float:
-        if movie_id not in feature_matrix.movie_metadata:
+        if feature_matrix is None or not hasattr(feature_matrix, "movie_metadata") or movie_id not in feature_matrix.movie_metadata:
             return 0.0
         
-        movie_idx = feature_matrix.movie_ids.index(movie_id)
+        movie_idx = None
+        if hasattr(feature_matrix, "tmdb_id_to_idx") and isinstance(feature_matrix.tmdb_id_to_idx, dict):
+            movie_idx = feature_matrix.tmdb_id_to_idx.get(movie_id)
+        elif hasattr(feature_matrix, "movie_ids") and isinstance(feature_matrix.movie_ids, list):
+            movie_idx = feature_matrix.movie_ids.index(movie_id) if movie_id in feature_matrix.movie_ids else None
+            
+        if movie_idx is None or not isinstance(movie_idx, (int, np.integer)):
+            return 0.0
+            
         movie_vector = feature_matrix.count_matrix[movie_idx]
         if hasattr(movie_vector, 'toarray'):
             movie_vector = movie_vector.toarray().flatten()

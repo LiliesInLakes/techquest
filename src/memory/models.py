@@ -10,10 +10,15 @@ class EventType(str, Enum):
     ADDED_TO_WATCHLIST = "added_to_watchlist"
     MARKED_WATCHED = "marked_watched"
     RATED = "rated"
+    REJECTED = "rejected"
+    NOT_INTERESTED = "not_interested"
 
 
 class FeatureType(str, Enum):
     GENRE = "genre"
+    TAG = "tag"
+    THEME = "theme"
+    TONE = "tone"
     KEYWORD = "keyword"
     DIRECTOR = "director"
     CAST = "cast"

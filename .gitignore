@@ -38,11 +38,30 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local/generated files
+hist.json
+data/analytics/
+data/processed/
+
+# Raw and legacy datasets
+data/ml-32m/
+data/tmdb_5000_*.csv
+data/links.csv
+
 # Local databases
 *.db
 data/*.db
 data/memory.db
+movie_features.db
 
 # Testing & logs
 .pytest_cache/
 *.log
+
+# Local handoff / audit files
+TO_PUSH.md
+TO_PUSH_AUDIT.md
+build_progress.json
+run_stderr.log
+scratch/
+

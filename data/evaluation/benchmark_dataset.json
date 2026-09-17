@@ -1,0 +1,326 @@
+{
+  "_metadata": {
+    "version": "1.0",
+    "created": "2026-09-15",
+    "description": "Curated evaluation benchmark for TechQuest movie recommender. 25 test cases across 5 categories. All ground-truth expected_relevant_movies use verified TMDB integer IDs.",
+    "total_test_cases": 25,
+    "categories": [
+      "semantic_conceptual",
+      "genre_standard",
+      "mixed_constraint",
+      "mood_tone",
+      "history_sensitive"
+    ]
+  },
+  "test_cases": [
+    {
+      "id": "TC-001",
+      "category": "semantic_conceptual",
+      "query": "mind-bending simulated reality, virtual worlds and corporate espionage inside dreams",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 27205, "title": "Inception", "relevance": 3},
+        {"movie_id": 603, "title": "The Matrix", "relevance": 3},
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 2},
+        {"movie_id": 19995, "title": "Avatar", "relevance": 1}
+      ]
+    },
+    {
+      "id": "TC-002",
+      "category": "semantic_conceptual",
+      "query": "space travel, wormholes, relativity, and saving humanity from environmental collapse",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 3},
+        {"movie_id": 27205, "title": "Inception", "relevance": 2},
+        {"movie_id": 603, "title": "The Matrix", "relevance": 2},
+        {"movie_id": 264660, "title": "Ex Machina", "relevance": 1}
+      ]
+    },
+    {
+      "id": "TC-003",
+      "category": "semantic_conceptual",
+      "query": "insomnia, consumerism, underground rebellion, split personality disorder, and anarchism",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 550, "title": "Fight Club", "relevance": 3},
+        {"movie_id": 680, "title": "Pulp Fiction", "relevance": 2},
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 2},
+        {"movie_id": 550, "title": "Fight Club", "relevance": 3}
+      ]
+    },
+    {
+      "id": "TC-004",
+      "category": "semantic_conceptual",
+      "query": "non-linear crime stories, hitmen, boxing fixed matches, and stolen briefcase in Los Angeles",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 680, "title": "Pulp Fiction", "relevance": 3},
+        {"movie_id": 238, "title": "The Godfather", "relevance": 2},
+        {"movie_id": 550, "title": "Fight Club", "relevance": 1}
+      ]
+    },
+    {
+      "id": "TC-005",
+      "category": "semantic_conceptual",
+      "query": "vigilante justice, corrupt Gotham city, psychotic villain Joker, and moral decay",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 3},
+        {"movie_id": 27205, "title": "Inception", "relevance": 2},
+        {"movie_id": 550, "title": "Fight Club", "relevance": 1}
+      ]
+    },
+    {
+      "id": "TC-006",
+      "category": "genre_standard",
+      "query": "science fiction space exploration and futuristic technology",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 3},
+        {"movie_id": 603, "title": "The Matrix", "relevance": 3},
+        {"movie_id": 27205, "title": "Inception", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-007",
+      "category": "genre_standard",
+      "query": "crime drama mafia family power struggle and loyalty",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 238, "title": "The Godfather", "relevance": 3},
+        {"movie_id": 680, "title": "Pulp Fiction", "relevance": 2},
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 1}
+      ]
+    },
+    {
+      "id": "TC-008",
+      "category": "genre_standard",
+      "query": "inspiring prison drama friendship hope and redemption",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 278, "title": "The Shawshank Redemption", "relevance": 3},
+        {"movie_id": 13, "title": "Forrest Gump", "relevance": 2},
+        {"movie_id": 424, "title": "Schindler's List", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-009",
+      "category": "genre_standard",
+      "query": "historical World War II drama compassion and survival",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 424, "title": "Schindler's List", "relevance": 3},
+        {"movie_id": 13, "title": "Forrest Gump", "relevance": 2},
+        {"movie_id": 278, "title": "The Shawshank Redemption", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-010",
+      "category": "genre_standard",
+      "query": "heartwarming comedy drama through decades of American history",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 13, "title": "Forrest Gump", "relevance": 3},
+        {"movie_id": 278, "title": "The Shawshank Redemption", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-011",
+      "category": "mixed_constraint",
+      "query": "1990s action science fiction cyber thriller",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 603, "title": "The Matrix", "relevance": 3},
+        {"movie_id": 550, "title": "Fight Club", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-012",
+      "category": "mixed_constraint",
+      "query": "2000s psychological thriller heist with Christopher Nolan direction",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 27205, "title": "Inception", "relevance": 3},
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 2},
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-013",
+      "category": "mixed_constraint",
+      "query": "1970s crime mafia epic masterpiece",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 238, "title": "The Godfather", "relevance": 3}
+      ]
+    },
+    {
+      "id": "TC-014",
+      "category": "mixed_constraint",
+      "query": "1990s Quentin Tarantino neo-noir indie crime",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 680, "title": "Pulp Fiction", "relevance": 3}
+      ]
+    },
+    {
+      "id": "TC-015",
+      "category": "mixed_constraint",
+      "query": "2010s epic sci-fi adventure in space",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 3},
+        {"movie_id": 27205, "title": "Inception", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-016",
+      "category": "mood_tone",
+      "query": "dark dystopian psychological dread and existential angst",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 550, "title": "Fight Club", "relevance": 3},
+        {"movie_id": 603, "title": "The Matrix", "relevance": 3},
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-017",
+      "category": "mood_tone",
+      "query": "emotional uplifting hope perseverance through tragic circumstances",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 278, "title": "The Shawshank Redemption", "relevance": 3},
+        {"movie_id": 13, "title": "Forrest Gump", "relevance": 3},
+        {"movie_id": 424, "title": "Schindler's List", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-018",
+      "category": "mood_tone",
+      "query": "gritty tense moral dilemma crime in urban setting",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 3},
+        {"movie_id": 680, "title": "Pulp Fiction", "relevance": 3},
+        {"movie_id": 238, "title": "The Godfather", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-019",
+      "category": "mood_tone",
+      "query": "awe-inspiring grand cosmic scale loneliness and love across time",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 3},
+        {"movie_id": 27205, "title": "Inception", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-020",
+      "category": "mood_tone",
+      "query": "stylish cool witty fast-paced dialogue and sudden violence",
+      "watch_history": [],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 680, "title": "Pulp Fiction", "relevance": 3},
+        {"movie_id": 550, "title": "Fight Club", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-021",
+      "category": "history_sensitive",
+      "query": "futuristic thrillers with high stakes",
+      "watch_history": [
+        {"movie_id": 27205, "rating": 5.0},
+        {"movie_id": 603, "rating": 4.5}
+      ],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 3},
+        {"movie_id": 603, "title": "The Matrix", "relevance": 3},
+        {"movie_id": 27205, "title": "Inception", "relevance": 3}
+      ]
+    },
+    {
+      "id": "TC-022",
+      "category": "history_sensitive",
+      "query": "intense crime dramas about criminal syndicates",
+      "watch_history": [
+        {"movie_id": 238, "rating": 5.0},
+        {"movie_id": 680, "rating": 4.5}
+      ],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 238, "title": "The Godfather", "relevance": 3},
+        {"movie_id": 680, "title": "Pulp Fiction", "relevance": 3},
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-023",
+      "category": "history_sensitive",
+      "query": "profound historical and human struggle stories",
+      "watch_history": [
+        {"movie_id": 424, "rating": 5.0},
+        {"movie_id": 278, "rating": 5.0}
+      ],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 278, "title": "The Shawshank Redemption", "relevance": 3},
+        {"movie_id": 424, "title": "Schindler's List", "relevance": 3},
+        {"movie_id": 13, "title": "Forrest Gump", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-024",
+      "category": "history_sensitive",
+      "query": "mind-bending dark action thrillers",
+      "watch_history": [
+        {"movie_id": 550, "rating": 5.0},
+        {"movie_id": 155, "rating": 4.5}
+      ],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 550, "title": "Fight Club", "relevance": 3},
+        {"movie_id": 155, "title": "The Dark Knight", "relevance": 3},
+        {"movie_id": 603, "title": "The Matrix", "relevance": 2}
+      ]
+    },
+    {
+      "id": "TC-025",
+      "category": "history_sensitive",
+      "query": "sci-fi epics with philosophical themes",
+      "watch_history": [
+        {"movie_id": 157336, "rating": 5.0},
+        {"movie_id": 27205, "rating": 4.5}
+      ],
+      "subscriptions": [],
+      "expected_relevant_movies": [
+        {"movie_id": 157336, "title": "Interstellar", "relevance": 3},
+        {"movie_id": 27205, "title": "Inception", "relevance": 3},
+        {"movie_id": 603, "title": "The Matrix", "relevance": 2}
+      ]
+    }
+  ]
+}

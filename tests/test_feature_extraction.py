@@ -153,6 +153,7 @@ class TestNLFeatureExtractor(unittest.TestCase):
         """Test that ExtractedFeatures are translated to correct TMDB /discover/movie query params."""
         features = ExtractedFeatures(
             primary_genres=["Action", "Science Fiction"],
+            explicit_genres=["Action", "Science Fiction"],
             excluded_genres=["Horror"],
             release_year_min=1990,
             release_year_max=1999,
@@ -161,7 +162,7 @@ class TestNLFeatureExtractor(unittest.TestCase):
             min_rating=7.0
         )
         params = self.extractor.build_tmdb_discover_params(
-            features, subscriptions=["8", "337"], region="US", language="en"
+            features, subscriptions=["8", "337"], region="US"
         )
 
         self.assertEqual(params["with_genres"], "28,878")  # Action=28, Sci-Fi=878
@@ -173,11 +174,13 @@ class TestNLFeatureExtractor(unittest.TestCase):
         self.assertEqual(params["sort_by"], "popularity.desc")
         self.assertEqual(params["with_watch_providers"], ["8", "337"])
         self.assertEqual(params["watch_region"], "US")
+        self.assertEqual(params["language"], "en")
 
     def test_build_fallback_tmdb_params(self):
         """Test query loosening: switches from AND (comma) to OR (pipe) and includes loose genres."""
         features = ExtractedFeatures(
             primary_genres=["Science Fiction"],
+            explicit_genres=["Science Fiction"],
             loose_genres=["Action", "Mystery"],
             excluded_genres=["Horror"]
         )
@@ -189,7 +192,38 @@ class TestNLFeatureExtractor(unittest.TestCase):
         self.assertIn("28", params["with_genres"])
         self.assertIn("9648", params["with_genres"])
         self.assertEqual(params["without_genres"], "27")
-        self.assertEqual(params["min_rating"], 0.0)
+        self.assertNotIn("min_rating", params)
+
+    def test_soft_vs_hard_constraint_distinction(self):
+        """Verify soft queries omit hard filters and explicit queries include them."""
+        # Soft query
+        soft_f = self.extractor._fallback_extraction("something dark and psychological", {})
+        soft_params = self.extractor.build_tmdb_discover_params(soft_f)
+        self.assertNotIn("primary_release_date_gte", soft_params)
+        self.assertNotIn("with_runtime_lte", soft_params)
+        self.assertNotIn("with_cast", soft_params)
+        self.assertNotIn("with_crew", soft_params)
+        self.assertNotIn("with_keywords", soft_params)
+        self.assertNotIn("language", soft_params)
+        self.assertNotEqual(soft_f.include_adult, True)
+
+        # Explicit query
+        hard_f = self.extractor._fallback_extraction("1990s movie with Tom Hanks", {})
+        self.assertEqual(hard_f.release_year_min, 1990)
+        self.assertEqual(hard_f.release_year_max, 1999)
+        self.assertIn("Tom Hanks", hard_f.actors)
+        hard_params = self.extractor.build_tmdb_discover_params(hard_f)
+        self.assertEqual(hard_params["primary_release_date_gte"], "1990-01-01")
+        self.assertEqual(hard_params["primary_release_date_lte"], "1999-12-31")
+        self.assertEqual(hard_params["with_cast"], ["Tom Hanks"])
+
+    def test_adult_content_parsing(self):
+        """Test that include_adult is True only on explicit adult requests."""
+        f1 = self.extractor._fallback_extraction("dark violent mature thriller", {})
+        self.assertNotEqual(f1.include_adult, True)
+
+        f2 = self.extractor._fallback_extraction("nsfw adult movie", {})
+        self.assertEqual(f2.include_adult, True)
 
 
 class TestTMDBClientHelpers(unittest.IsolatedAsyncioTestCase):
@@ -224,11 +258,12 @@ class TestTMDBClientHelpers(unittest.IsolatedAsyncioTestCase):
 
         client = TMDBClient(api_key="fake_key_for_testing")
         client._request = AsyncMock(return_value={"results": []})
+        client.search_person = AsyncMock(side_effect=lambda name: 500 if name == "Tom Cruise" else None)
 
         await client.discover_movies(
             with_genres="28,878",
             without_genres="27",
-            with_cast="500",
+            with_cast=["Tom Cruise"],
             primary_release_date_gte="1990-01-01",
             primary_release_date_lte="1999-12-31",
             with_runtime_lte=120,
@@ -246,7 +281,9 @@ class TestTMDBClientHelpers(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params["primary_release_date.gte"], "1990-01-01")
         self.assertEqual(params["primary_release_date.lte"], "1999-12-31")
         self.assertEqual(params["with_runtime.lte"], 120)
+        self.assertEqual(params["with_original_language"], "en")
 
 
 if __name__ == "__main__":
     unittest.main()
+
