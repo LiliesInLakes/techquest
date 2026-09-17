@@ -137,16 +137,98 @@ def verify_installed_artifacts(root_dir: Path, verbose: bool = True) -> bool:
     return all_valid
 
 
-def download_file_with_progress(url: str, dest_path: Path):
-    """Downloads a file via HTTP with a progress counter."""
-    print(f"Connecting to: {url}")
+import urllib.parse
+
+
+class SafeAuthRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that drops Authorization headers on cross-domain redirects (e.g. to S3)."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            orig_host = urllib.parse.urlparse(req.full_url).hostname
+            new_host = urllib.parse.urlparse(newurl).hostname
+            if orig_host != new_host:
+                # Remove Authorization header to avoid AWS S3 auth conflicts
+                new_headers = {k: v for k, v in new_req.headers.items() if k.lower() != 'authorization'}
+                new_req.headers = new_headers
+        return new_req
+
+
+def get_github_token() -> str | None:
+    """Retrieves GitHub token from environment (GITHUB_TOKEN preferred over GH_TOKEN)."""
+    for env_var in ("GITHUB_TOKEN", "GH_TOKEN"):
+        val = os.environ.get(env_var)
+        if val and val.strip():
+            return val.strip()
+    return None
+
+
+def resolve_private_release_asset_url(repo: str, tag: str, asset_name: str, token: str) -> str:
+    """Queries the GitHub API to find the authenticated asset download URL for a private release."""
+    api_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
     req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "TechQuest-Asset-Downloader/1.0"}
+        api_url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "TechQuest-Asset-Downloader/1.0"
+        }
     )
     
+    opener = urllib.request.build_opener(SafeAuthRedirectHandler())
     try:
-        with urllib.request.urlopen(req) as response:
+        with opener.open(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assets = data.get("assets", [])
+            for asset in assets:
+                if asset.get("name") == asset_name:
+                    return asset.get("url")  # API asset url (e.g. https://api.github.com/repos/.../releases/assets/...)
+            
+            raise RuntimeError(
+                f"Release tag '{tag}' exists in '{repo}', but asset '{asset_name}' was not found in release assets.\n"
+                f"Available assets: {[a.get('name') for a in assets]}"
+            )
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise RuntimeError(
+                "GitHub authentication failed (HTTP 401: Unauthorized).\n"
+                "Please verify that your GITHUB_TOKEN or GH_TOKEN is valid and active."
+            ) from e
+        elif e.code == 403:
+            raise RuntimeError(
+                f"Access forbidden (HTTP 403: Forbidden) when querying release '{tag}' in '{repo}'.\n"
+                "Please verify that your token has repository read permissions for private repositories."
+            ) from e
+        elif e.code == 404:
+            raise RuntimeError(
+                f"Release '{tag}' not found in '{repo}' (HTTP 404).\n"
+                f"Please verify that the release tag exists on GitHub or supply --local-zip <path>."
+            ) from e
+        raise RuntimeError(f"GitHub API error ({e.code}): {e.reason}") from e
+
+
+def download_file_with_progress(url: str, dest_path: Path, token: str | None = None, is_api_asset: bool = False):
+    """Downloads a file via HTTP with a progress counter, supporting optional Bearer auth and cross-domain redirects."""
+    headers = {
+        "User-Agent": "TechQuest-Asset-Downloader/1.0"
+    }
+    
+    if is_api_asset:
+        headers["Accept"] = "application/octet-stream"
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        print("Connecting with GitHub authentication...")
+    else:
+        print(f"Connecting to: {url}")
+
+    req = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(SafeAuthRedirectHandler())
+
+    try:
+        with opener.open(req) as response:
             total_length = response.headers.get("content-length")
             total_bytes = int(total_length) if total_length else None
             downloaded = 0
@@ -171,11 +253,29 @@ def download_file_with_progress(url: str, dest_path: Path):
                     sys.stdout.flush()
             print("\nDownload complete.")
     except urllib.error.HTTPError as e:
-        if e.code == 404:
+        if e.code == 401:
             raise RuntimeError(
-                f"Release asset not found (HTTP 404) at {url}.\n"
-                f"Please verify that the release tag exists on GitHub or supply --local-zip <path>."
+                "GitHub download failed (HTTP 401: Unauthorized).\n"
+                "Please verify that your GITHUB_TOKEN or GH_TOKEN is valid and active."
             ) from e
+        elif e.code == 403:
+            raise RuntimeError(
+                "Access forbidden (HTTP 403: Forbidden).\n"
+                "Please verify that your token has permission to download release assets from this repository."
+            ) from e
+        elif e.code == 404:
+            if not token:
+                raise RuntimeError(
+                    f"Release asset not found (HTTP 404) at {url}.\n"
+                    f"Note: If this is a private repository, set GITHUB_TOKEN or GH_TOKEN in your environment before running this script.\n"
+                    f"Example (PowerShell): $env:GITHUB_TOKEN = 'ghp_...'\n"
+                    f"Or supply a local archive via --local-zip <path>."
+                ) from e
+            else:
+                raise RuntimeError(
+                    f"Release asset not found (HTTP 404) at {url}.\n"
+                    f"Please verify that the release tag and asset exist on GitHub or supply --local-zip <path>."
+                ) from e
         raise RuntimeError(f"HTTP download error: {e.code} - {e.reason}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Network connection failed: {e.reason}") from e
@@ -238,15 +338,24 @@ def main():
         extract_archive(local_zip_path, root_dir)
         sys.exit(0)
 
-    # 4. Download from GitHub Release
+    # 4. Download from GitHub Release (supporting public and private repositories)
     bundle_name = BUNDLE_FILENAME_TEMPLATE.format(tag=args.tag)
-    release_url = f"https://github.com/{args.repo}/releases/download/{args.tag}/{bundle_name}"
-    
     tmp_download_path = root_dir / "data" / f"temp_{bundle_name}"
     tmp_download_path.parent.mkdir(parents=True, exist_ok=True)
 
+    token = get_github_token()
+    
     try:
-        download_file_with_progress(release_url, tmp_download_path)
+        if token:
+            # Authenticated private repository flow via GitHub API asset endpoint
+            print(f"Authenticated mode enabled for repository '{args.repo}' (tag: {args.tag}).")
+            asset_api_url = resolve_private_release_asset_url(args.repo, args.tag, bundle_name, token)
+            download_file_with_progress(asset_api_url, tmp_download_path, token=token, is_api_asset=True)
+        else:
+            # Public repository direct download
+            release_url = f"https://github.com/{args.repo}/releases/download/{args.tag}/{bundle_name}"
+            download_file_with_progress(release_url, tmp_download_path, token=None, is_api_asset=False)
+            
         extract_archive(tmp_download_path, root_dir)
     finally:
         if tmp_download_path.exists():
@@ -258,3 +367,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
