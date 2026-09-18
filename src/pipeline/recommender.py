@@ -113,26 +113,46 @@ class MovieRecommender:
 
         model_name = self.rec_config.get("semantic_model_name", "multi-qa-mpnet-base-dot-v1")
         kw_path = Path("data/processed/keyword_embeddings.pkl")
+        kw_feat_path = Path("data/processed/keyword_feature_embeddings.npy")
+
+        self.semantic_search = None
         if kw_path.exists():
             try:
                 self.semantic_search = SemanticKeywordSearch.load(str(kw_path), model_name=model_name)
-            except Exception:
-                self.semantic_search = SemanticKeywordSearch(
+            except Exception as e:
+                print(f"Warning: Failed to load {kw_path} ({e})", file=sys.stderr)
+
+        if self.semantic_search is None and kw_feat_path.exists() and self.feature_matrix:
+            try:
+                self.semantic_search = SemanticKeywordSearch.from_feature_embeddings(
+                    str(kw_feat_path),
+                    self.feature_matrix.feature_names,
                     model_name=model_name,
                     threshold=self.rec_config.get("semantic_similarity_threshold", 0.65)
                 )
-                self.semantic_search.build_index(self.feature_matrix.feature_names)
-                self.semantic_search.save(str(kw_path))
-        else:
+                print(f"Reconstructed keyword search index from {kw_feat_path}", file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: Failed to construct from feature embeddings ({e})", file=sys.stderr)
+
+        if self.semantic_search is None:
             self.semantic_search = SemanticKeywordSearch(
                 model_name=model_name,
                 threshold=self.rec_config.get("semantic_similarity_threshold", 0.65)
             )
-            self.semantic_search.build_index(self.feature_matrix.feature_names)
-            self.semantic_search.save(str(kw_path))
+            if self.feature_matrix:
+                self.semantic_search.build_index(self.feature_matrix.feature_names)
+                try:
+                    self.semantic_search.save(str(kw_path))
+                except Exception:
+                    pass
+
+        # Share the loaded SentenceTransformer instance with matrix_builder to prevent duplicate 438MB model load in memory
+        if self.matrix_builder is not None and self.semantic_search is not None:
+            self.matrix_builder._semantic_model = self.semantic_search.model
 
         self.hybrid_matcher = HybridKeywordMatcher(
-            self.semantic_search, self.feature_matrix.feature_names
+            self.semantic_search,
+            self.feature_matrix.feature_names if self.feature_matrix else []
         )
 
         self.preference_extractor = PreferenceExtractor(

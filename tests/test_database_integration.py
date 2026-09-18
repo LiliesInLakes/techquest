@@ -8,6 +8,39 @@ from src.pipeline.recommender import MovieRecommender
 from src.llm.nl_feature_extractor import ExtractedFeatures
 
 
+def validate_recommendation_item(r, recommender=None):
+    """
+    Reusable test helper to validate a recommendation item against the response contract:
+    - required fields ('movie', 'reasoning', 'score')
+    - numeric score >= 0
+    - non-empty reasoning string
+    - movie dictionary with valid integer ID > 0 and non-empty title
+    - for local candidates: ID in feature_matrix.movie_metadata
+    - for live/out-of-corpus candidates: required metadata on movie object itself
+    """
+    assert "movie" in r, "Recommendation item missing 'movie'"
+    assert "reasoning" in r, "Recommendation item missing 'reasoning'"
+    assert "score" in r, "Recommendation item missing 'score'"
+    assert isinstance(r["score"], (int, float)) and r["score"] >= 0
+    assert isinstance(r["reasoning"], str) and len(r["reasoning"]) > 0
+
+    movie = r["movie"]
+    assert isinstance(movie, dict), "Movie must be a dict"
+    assert "id" in movie, "Movie missing 'id'"
+    assert isinstance(movie["id"], int) and movie["id"] > 0
+    assert "title" in movie and isinstance(movie["title"], str) and len(movie["title"]) > 0
+    assert "genres" in movie and isinstance(movie["genres"], list)
+
+    if recommender and hasattr(recommender, "feature_matrix") and recommender.feature_matrix:
+        if movie["id"] in recommender.feature_matrix.movie_metadata:
+            meta = recommender.feature_matrix.movie_metadata[movie["id"]]
+            assert meta.get("title") is not None
+        else:
+            # Live/out-of-corpus candidate: verify candidate metadata fields
+            assert "vote_average" in movie
+            assert "vote_count" in movie
+
+
 class TestDatabaseIntegration:
     def test_database_integrity_and_manifest(self):
         db = MovieDatabase()
@@ -236,8 +269,5 @@ class TestDatabaseIntegration:
         assert "recommendations" in res
         assert len(res["recommendations"]) == 3
         for r in res["recommendations"]:
-            assert "movie" in r
-            assert "reasoning" in r
-            assert "score" in r
-            assert r["movie"]["id"] in rec.feature_matrix.movie_metadata
+            validate_recommendation_item(r, rec)
 

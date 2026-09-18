@@ -1,6 +1,6 @@
 import sys
 import numpy as np
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Set, Tuple, Optional, Any
 from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -15,6 +15,13 @@ try:
 except LookupError:
     nltk.download('wordnet', quiet=True)
     nltk.download('omw-1.4', quiet=True)
+
+
+def _get_embedding_dimension(model: Any) -> int:
+    """Safely retrieves model embedding dimension without deprecation warnings."""
+    if hasattr(model, "get_embedding_dimension"):
+        return model.get_embedding_dimension()
+    return model.get_sentence_embedding_dimension()
 
 
 @dataclass
@@ -138,15 +145,32 @@ class SemanticKeywordSearch:
         instance = cls(model_name=model_name, threshold=data['threshold'])
         instance.keyword_embeddings = data['keyword_embeddings']
         instance.keyword_list = data['keyword_list']
-        instance.synonym_cache = data['synonym_cache']
+        instance.synonym_cache = data.get('synonym_cache', {})
         instance.embedding_matrix = np.array(list(data['keyword_embeddings'].values()))
         
-        expected_dim = instance.model.get_sentence_embedding_dimension()
+        expected_dim = _get_embedding_dimension(instance.model)
         if instance.embedding_matrix.shape[1] != expected_dim:
             raise ValueError(
                 f"Keyword embedding dimension mismatch: found {instance.embedding_matrix.shape[1]}d, expected {expected_dim}d"
             )
         
+        return instance
+
+    @classmethod
+    def from_feature_embeddings(
+        cls,
+        embeddings_path: str,
+        feature_names: List[str],
+        model_name: str = 'multi-qa-mpnet-base-dot-v1',
+        threshold: float = 0.65
+    ) -> 'SemanticKeywordSearch':
+        """Quickly reconstructs SemanticKeywordSearch from precomputed feature embedding matrix."""
+        arr = np.load(embeddings_path)
+        instance = cls(model_name=model_name, threshold=threshold)
+        cleaned_features = [f.lower().strip() for f in feature_names]
+        instance.keyword_list = cleaned_features
+        instance.embedding_matrix = arr
+        instance.keyword_embeddings = {kw: arr[i] for i, kw in enumerate(cleaned_features)}
         return instance
 
 
@@ -166,7 +190,7 @@ class HybridKeywordMatcher:
 
     def _load_or_build_feature_embeddings(self):
         expected_count = len(self.feature_names)
-        expected_dim = self.semantic_search.model.get_sentence_embedding_dimension()
+        expected_dim = _get_embedding_dimension(self.semantic_search.model)
         
         # 1. Try to load cached embeddings
         if self.cache_path.exists():

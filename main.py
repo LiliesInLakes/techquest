@@ -139,11 +139,15 @@ def run_setup_db(db_path: str = "movie_features.db"):
         print(f"\n[Database Setup] WARNING: {msg}")
 
 
-def run_profile_inspect(user_id: str):
+def run_profile_inspect(user_id: str, as_json: bool = False):
     from src.memory.service import UserMemoryService
     service = UserMemoryService()
     profile = service.get_user_profile(user_id)
-    print(service._serialize_profile(profile))
+    if as_json:
+        print(service._serialize_profile(profile))
+    else:
+        summary = service.get_user_profile_summary(user_id)
+        print(json.dumps(summary, indent=2))
 
 
 def run_log_event(user_id: str, movie_id: int, event_type: str):
