@@ -2,9 +2,6 @@
 
 > **One-line pitch:** An agentic movie-recommendation system. It blends TMDB live discovery, offline feature engineering, semantic search, two-stage ranking, and LLM explanations. It can be driven three ways: **CLI**, **MCP server** (Model Context Protocol), or **A2A agent** (Agent-to-Agent protocol).
 
-If you have never seen this codebase before, read this file top-to-bottom. By the end you should be able to set it up, run it, trace a request through every layer, and extend it.
-
-
 (tldr at end)
 ---
 
